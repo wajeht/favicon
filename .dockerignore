@@ -30,7 +30,7 @@ Thumbs.db
 
 # Build artifacts
 favicon
-favicon.db
+db.sqlite
 
 # Go build cache
 .cache/
