@@ -23,20 +23,23 @@ import (
 
 var db *sql.DB
 
+var getFaviconStmt *sql.Stmt
+var saveFaviconStmt *sql.Stmt
+
 var httpClient = &http.Client{
-	Timeout: 3 * time.Second, // Reduced from 5 to 3 seconds
+	Timeout: 1 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:          200,              // Increased from 100
-		MaxIdleConnsPerHost:   30,               // Increased from 10
-		MaxConnsPerHost:       50,               // Added max connections per host
-		IdleConnTimeout:       60 * time.Second, // Increased from 30
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   30,
+		MaxConnsPerHost:       50,
+		IdleConnTimeout:       60 * time.Second,
 		DisableKeepAlives:     false,
-		WriteBufferSize:       64 * 1024,               // Increased from 32KB
-		ReadBufferSize:        64 * 1024,               // Increased from 32KB
-		TLSHandshakeTimeout:   1500 * time.Millisecond, // Fast TLS timeout
-		ResponseHeaderTimeout: 1500 * time.Millisecond, // Fast response header timeout
-		ExpectContinueTimeout: 500 * time.Millisecond,  // Fast expect continue timeout
-		ForceAttemptHTTP2:     true,                    // Force HTTP/2 when available
+		WriteBufferSize:       64 * 1024,
+		ReadBufferSize:        64 * 1024,
+		TLSHandshakeTimeout:   500 * time.Millisecond,
+		ResponseHeaderTimeout: 500 * time.Millisecond,
+		ExpectContinueTimeout: 200 * time.Millisecond,
+		ForceAttemptHTTP2:     true,
 	},
 }
 
@@ -85,6 +88,23 @@ func initDB() error {
 		return err
 	}
 
+	getFaviconStmt, err = db.Prepare(`
+	SELECT data, content_type
+	FROM favicons
+	WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP
+`)
+	if err != nil {
+		return err
+	}
+
+	saveFaviconStmt, err = db.Prepare(`
+	INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at)
+	VALUES (?, ?, ?, datetime('now', '+24 hours'))
+`)
+	if err != nil {
+		return err
+	}
+
 	if err := cleanupExpiredFavicons(); err != nil {
 		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
 	}
@@ -110,27 +130,15 @@ func cleanupExpiredFavicons() error {
 func getCachedFavicon(domain string) ([]byte, string, error) {
 	var data []byte
 	var contentType string
-	query := `
-		SELECT data, content_type
-		FROM favicons
-		WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP
-	`
-
-	err := db.QueryRow(query, domain).Scan(&data, &contentType)
+	err := getFaviconStmt.QueryRow(domain).Scan(&data, &contentType)
 	if err != nil {
 		return nil, "", err
 	}
-
 	return data, contentType, nil
 }
 
 func saveFavicon(domain string, data []byte, contentType string) error {
-	query := `
-		INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at)
-		VALUES (?, ?, ?, datetime('now', '+24 hours'))
-	`
-
-	_, err := db.Exec(query, domain, data, contentType)
+	_, err := saveFaviconStmt.Exec(domain, data, contentType)
 	return err
 }
 
@@ -202,7 +210,7 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 	}
 
 	dst := image.NewRGBA(image.Rect(0, 0, 16, 16))
-	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+	draw.NearestNeighbor.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
 
 	var buf bytes.Buffer
 	if strings.Contains(contentType, "png") {
@@ -264,37 +272,15 @@ func fetchFaviconsParallel(urlGroups [][]string, timeout time.Duration) *Favicon
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	if len(urlGroups) > 0 && len(urlGroups[0]) > 0 {
-		fastCtx, fastCancel := context.WithTimeout(ctx, 300*time.Millisecond)
-		fastResult := fetchFavicon(fastCtx, urlGroups[0][0]) // First URL should be favicon.ico
-		fastCancel()
-
-		if fastResult.Error == nil {
-			return &fastResult
-		}
-	}
-
 	resultChan := make(chan FaviconResult, 10)
 
 	var wg sync.WaitGroup
 
 	for groupIdx, urls := range urlGroups {
-		for urlIdx, url := range urls {
-			if groupIdx == 0 && urlIdx == 0 {
-				continue
-			}
-
+		for _, url := range urls {
 			wg.Add(1)
 			go func(u string, priority int) {
 				defer wg.Done()
-
-				if priority > 0 {
-					select {
-					case <-time.After(time.Duration(priority*50) * time.Millisecond):
-					case <-ctx.Done():
-						return
-					}
-				}
 
 				result := fetchFavicon(ctx, u)
 				if result.Error == nil {
@@ -429,7 +415,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	baseURL := "https://" + domain
 	faviconURLGroups := getFaviconURLs(baseURL)
 
-	if result := fetchFaviconsParallel(faviconURLGroups, 2*time.Second); result != nil {
+	if result := fetchFaviconsParallel(faviconURLGroups, 180*time.Millisecond); result != nil {
 		if err := saveFavicon(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
@@ -477,6 +463,8 @@ func main() {
 		log.Fatal("Failed to initialize database:", err)
 	}
 	defer db.Close()
+	defer getFaviconStmt.Close()
+	defer saveFaviconStmt.Close()
 
 	go func() {
 		ticker := time.NewTicker(6 * time.Hour)
