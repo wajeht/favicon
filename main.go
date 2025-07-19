@@ -84,8 +84,9 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	rawUrl := r.URL.Query().Get("url")
+
 	if rawUrl == "" {
-		http.Error(w, "Missing 'url' query parameter.\nUsage: /?url=<url>", http.StatusBadRequest)
+		http.Error(w, "Missing 'url' query parameter. Usage: /?url=<url>", http.StatusBadRequest)
 		return
 	}
 
