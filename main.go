@@ -1,11 +1,12 @@
 package main
 
 import (
-	"github.com/wajeht/favicon/assets"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/wajeht/favicon/assets"
 )
 
 func extractDomain(rawURL string) string {
@@ -52,6 +53,68 @@ func getContentType(url string, respContentType string) string {
 	}
 
 	return "image/x-icon"
+}
+
+func isImage(contentType string) bool {
+	if contentType == "" {
+		return false
+	}
+
+	contentType = strings.ToLower(strings.Split(contentType, ";")[0])
+	switch contentType {
+	case "image/x-icon", "image/vnd.microsoft.icon", "image/icon", "image/ico":
+		return true
+	case "image/png", "image/jpeg", "image/jpg", "image/gif":
+		return true
+	case "image/svg+xml", "image/webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func validImage(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+
+	// PNG: 89 50 4E 47
+	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
+		return true
+	}
+
+	// ICO: 00 00 01 00
+	if data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x00 {
+		return true
+	}
+
+	// JPEG: FF D8 FF
+	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return true
+	}
+
+	// GIF: 47 49 46 38 (GIF8)
+	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38 {
+		return true
+	}
+
+	// WebP: RIFF....WEBP
+	if len(data) >= 12 &&
+		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
+		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
+		return true
+	}
+
+	// SVG: check for XML/SVG content
+	if len(data) > 5 {
+		content := strings.TrimSpace(string(data[:100]))
+		if strings.HasPrefix(content, "<svg") ||
+			(strings.HasPrefix(content, "<?xml") && strings.Contains(content, "<svg")) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
@@ -129,13 +192,22 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		contentType := resp.Header.Get("Content-Type")
+		if !isImage(contentType) {
+			continue
+		}
+
 		faviconData, err := io.ReadAll(resp.Body)
 		if err != nil {
 			continue
 		}
 
-		contentType := getContentType(url, resp.Header.Get("Content-Type"))
-		w.Header().Set("Content-Type", contentType)
+		if !validImage(faviconData) {
+			continue
+		}
+
+		responseContentType := getContentType(url, contentType)
+		w.Header().Set("Content-Type", responseContentType)
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 
 		_, err = w.Write(faviconData)
@@ -145,7 +217,19 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.NotFound(w, r)
+	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
+	if err != nil {
+		handleServerError(w, r, err)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", "image/x-icon")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, err = io.Copy(w, file)
+	if err != nil {
+		handleServerError(w, r, err)
+	}
 }
 
 func main() {
