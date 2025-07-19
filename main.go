@@ -4,18 +4,34 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/wajeht/favicon/assets"
 )
 
-func extractDomainAndTLD(rawUrl string) string {
-	parsedUrl, err := url.Parse(rawUrl)
-	if err != nil {
-		return rawUrl
+func extractDomain(rawURL string) string {
+	url := rawURL
+	if strings.HasPrefix(url, "http://") {
+		url = url[7:]
+	} else if strings.HasPrefix(url, "https://") {
+		url = url[8:]
 	}
-	return parsedUrl.Hostname()
+
+	if slashIndex := strings.Index(url, "/"); slashIndex != -1 {
+		url = url[:slashIndex]
+	}
+
+	if colonIndex := strings.Index(url, ":"); colonIndex != -1 {
+		url = url[:colonIndex]
+	}
+
+	if url == "" {
+		return rawURL
+	}
+
+	host := strings.ToLower(url)
+
+	return host
 }
 
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
@@ -69,8 +85,10 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	domain := extractDomainAndTLD(rawUrl)
+	domain := extractDomain(rawUrl)
 
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(domain))
 }
 
