@@ -1,12 +1,11 @@
 package main
 
 import (
+	"github.com/wajeht/favicon/assets"
 	"io"
 	"log"
 	"net/http"
 	"strings"
-
-	"github.com/wajeht/favicon/assets"
 )
 
 func extractDomain(rawURL string) string {
@@ -28,9 +27,31 @@ func extractDomain(rawURL string) string {
 	if url == "" {
 		return rawURL
 	}
+	return strings.ToLower(url)
+}
 
-	host := strings.ToLower(url)
-	return host
+func getFaviconURLs(baseURL string) []string {
+	return []string{
+		baseURL + "/favicon.ico",
+		baseURL + "/favicon.png",
+		baseURL + "/apple-touch-icon.png",
+		baseURL + "/apple-touch-icon-precomposed.png",
+		baseURL + "/apple-touch-icon-120x120.png",
+		baseURL + "/apple-touch-icon-152x152.png",
+		baseURL + "/apple-touch-icon-180x180.png",
+	}
+}
+
+func getContentType(url string, respContentType string) string {
+	if respContentType != "" {
+		return respContentType
+	}
+
+	if strings.HasSuffix(url, ".png") {
+		return "image/png"
+	}
+
+	return "image/x-icon"
 }
 
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
@@ -83,20 +104,48 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
-	rawUrl := r.URL.Query().Get("url")
-
-	if rawUrl == "" {
+	rawURL := r.URL.Query().Get("url")
+	if rawURL == "" {
 		http.Error(w, "Missing 'url' query parameter. Usage: /?url=<url>", http.StatusBadRequest)
 		return
 	}
 
-	domain := extractDomain(rawUrl)
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, err := w.Write([]byte(domain))
-	if err != nil {
-		handleServerError(w, r, err)
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		rawURL = "https://" + rawURL
 	}
+
+	domain := extractDomain(rawURL)
+	baseURL := "https://" + domain
+	faviconURLs := getFaviconURLs(baseURL)
+
+	for _, url := range faviconURLs {
+		resp, err := http.Get(url)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		faviconData, err := io.ReadAll(resp.Body)
+		if err != nil {
+			continue
+		}
+
+		contentType := getContentType(url, resp.Header.Get("Content-Type"))
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+
+		_, err = w.Write(faviconData)
+		if err != nil {
+			handleServerError(w, r, err)
+		}
+		return
+	}
+
+	http.NotFound(w, r)
 }
 
 func main() {
@@ -111,6 +160,6 @@ func main() {
 	log.Println("Server is running at http://localhost")
 	err := http.ListenAndServe(":80", mux)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Server failed to start:", err)
 	}
 }
