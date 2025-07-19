@@ -19,10 +19,6 @@ func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func handleHome(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("handleHome()"))
-}
-
 func handleNotFound(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "The requested resource could not be found", http.StatusNotFound)
 }
@@ -54,6 +50,17 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "image/x-icon")
 	io.Copy(w, file)
+}
+
+func handleHome(w http.ResponseWriter, r *http.Request) {
+	url := r.URL.Query().Get("url")
+
+	if url == "" {
+		http.Error(w, "URL must not be empty", http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Write([]byte(url))
 }
 
 func main() {
