@@ -57,20 +57,20 @@ func initDB() error {
 		return err
 	}
 
-	db.SetMaxOpenConns(25)                 // 25 connections
-	db.SetMaxIdleConns(10)                 // 10 connections
-	db.SetConnMaxLifetime(5 * time.Minute) // 5 minutes
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
 		return err
 	}
 
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",    // Write-Ahead Logging
-		"PRAGMA synchronous=NORMAL;",  // Normal synchronous mode
-		"PRAGMA cache_size=10000;",    // 10MB cache
-		"PRAGMA temp_store=MEMORY;",   // Use memory for temporary storage
-		"PRAGMA mmap_size=268435456;", // 256MB
+		"PRAGMA journal_mode=WAL;",
+		"PRAGMA synchronous=NORMAL;",
+		"PRAGMA cache_size=10000;",
+		"PRAGMA temp_store=MEMORY;",
+		"PRAGMA mmap_size=268435456;",
 	}
 
 	for _, pragma := range pragmas {
