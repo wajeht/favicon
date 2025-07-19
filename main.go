@@ -73,50 +73,6 @@ func isImage(contentType string) bool {
 	}
 }
 
-func validImage(data []byte) bool {
-	if len(data) < 4 {
-		return false
-	}
-
-	// PNG: 89 50 4E 47
-	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 {
-		return true
-	}
-
-	// ICO: 00 00 01 00
-	if data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01 && data[3] == 0x00 {
-		return true
-	}
-
-	// JPEG: FF D8 FF
-	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
-		return true
-	}
-
-	// GIF: 47 49 46 38 (GIF8)
-	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38 {
-		return true
-	}
-
-	// WebP: RIFF....WEBP
-	if len(data) >= 12 &&
-		data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 &&
-		data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 {
-		return true
-	}
-
-	// SVG: check for XML/SVG content
-	if len(data) > 5 {
-		content := strings.TrimSpace(string(data[:100]))
-		if strings.HasPrefix(content, "<svg") ||
-			(strings.HasPrefix(content, "<?xml") && strings.Contains(content, "<svg")) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/") && r.URL.Path != "/static/" {
@@ -199,10 +155,6 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 		faviconData, err := io.ReadAll(resp.Body)
 		if err != nil {
-			continue
-		}
-
-		if !validImage(faviconData) {
 			continue
 		}
 
