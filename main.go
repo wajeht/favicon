@@ -24,14 +24,19 @@ import (
 var db *sql.DB
 
 var httpClient = &http.Client{
-	Timeout: 5 * time.Second, // 5 seconds
+	Timeout: 3 * time.Second, // Reduced from 5 to 3 seconds
 	Transport: &http.Transport{
-		MaxIdleConns:        100,              // 100 connections
-		MaxIdleConnsPerHost: 10,               // 10 connections per host
-		IdleConnTimeout:     30 * time.Second, // 30 seconds
-		DisableKeepAlives:   false,            // Keep connections alive
-		WriteBufferSize:     32 * 1024,        // 32KB
-		ReadBufferSize:      32 * 1024,        // 32KB
+		MaxIdleConns:          200,              // Increased from 100
+		MaxIdleConnsPerHost:   30,               // Increased from 10
+		MaxConnsPerHost:       50,               // Added max connections per host
+		IdleConnTimeout:       60 * time.Second, // Increased from 30
+		DisableKeepAlives:     false,
+		WriteBufferSize:       64 * 1024,               // Increased from 32KB
+		ReadBufferSize:        64 * 1024,               // Increased from 32KB
+		TLSHandshakeTimeout:   1500 * time.Millisecond, // Fast TLS timeout
+		ResponseHeaderTimeout: 1500 * time.Millisecond, // Fast response header timeout
+		ExpectContinueTimeout: 500 * time.Millisecond,  // Fast expect continue timeout
+		ForceAttemptHTTP2:     true,                    // Force HTTP/2 when available
 	},
 }
 
@@ -151,15 +156,25 @@ func extractDomain(rawURL string) string {
 	return strings.ToLower(url)
 }
 
-func getFaviconURLs(baseURL string) []string {
-	return []string{
-		baseURL + "/favicon.ico",
-		baseURL + "/favicon.png",
-		baseURL + "/apple-touch-icon.png",
-		baseURL + "/apple-touch-icon-precomposed.png",
-		baseURL + "/apple-touch-icon-120x120.png",
-		baseURL + "/apple-touch-icon-152x152.png",
-		baseURL + "/apple-touch-icon-180x180.png",
+func getFaviconURLs(baseURL string) [][]string {
+	// Return prioritized groups - try high-priority first, then fallback
+	return [][]string{
+		// High priority - most common favicons
+		{
+			baseURL + "/favicon.ico",
+			baseURL + "/favicon.png",
+		},
+		// Medium priority - Apple touch icons
+		{
+			baseURL + "/apple-touch-icon.png",
+			baseURL + "/apple-touch-icon-precomposed.png",
+		},
+		// Low priority - specific sizes
+		{
+			baseURL + "/apple-touch-icon-180x180.png",
+			baseURL + "/apple-touch-icon-152x152.png",
+			baseURL + "/apple-touch-icon-120x120.png",
+		},
 	}
 }
 
@@ -249,35 +264,67 @@ func fetchFavicon(ctx context.Context, url string) FaviconResult {
 	}
 }
 
-func fetchFaviconsParallel(urls []string, timeout time.Duration) *FaviconResult {
+func fetchFaviconsParallel(urlGroups [][]string, timeout time.Duration) *FaviconResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	resultChan := make(chan FaviconResult, len(urls))
-	var wg sync.WaitGroup
+	// Fast path: try favicon.ico first with short timeout (most common)
+	if len(urlGroups) > 0 && len(urlGroups[0]) > 0 {
+		fastCtx, fastCancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		fastResult := fetchFavicon(fastCtx, urlGroups[0][0]) // First URL should be favicon.ico
+		fastCancel()
 
-	for _, url := range urls {
-		wg.Add(1)
-		go func(u string) {
-			defer wg.Done()
-			result := fetchFavicon(ctx, u)
-			if result.Error == nil {
-				select {
-				case resultChan <- result:
-				case <-ctx.Done():
-				}
-			}
-		}(url)
+		if fastResult.Error == nil {
+			return &fastResult
+		}
 	}
 
+	resultChan := make(chan FaviconResult, 10)
+
+	// Try all remaining URLs in parallel with smart cancellation
+	var wg sync.WaitGroup
+
+	for groupIdx, urls := range urlGroups {
+		for urlIdx, url := range urls {
+			// Skip favicon.ico as we already tried it in fast path
+			if groupIdx == 0 && urlIdx == 0 {
+				continue
+			}
+
+			wg.Add(1)
+			go func(u string, priority int) {
+				defer wg.Done()
+
+				// Add slight delay for lower priority URLs to prefer higher priority ones
+				if priority > 0 {
+					select {
+					case <-time.After(time.Duration(priority*50) * time.Millisecond):
+					case <-ctx.Done():
+						return
+					}
+				}
+
+				result := fetchFavicon(ctx, u)
+				if result.Error == nil {
+					select {
+					case resultChan <- result:
+					case <-ctx.Done():
+					}
+				}
+			}(url, groupIdx)
+		}
+	}
+
+	// Close channel when all goroutines complete
 	go func() {
 		wg.Wait()
 		close(resultChan)
 	}()
 
+	// Return first successful result
 	for result := range resultChan {
 		if result.Error == nil {
-			cancel()
+			cancel() // Cancel remaining requests
 			return &result
 		}
 	}
@@ -365,6 +412,8 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
+	start := time.Now() // Performance tracking
+
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
 		http.Error(w, "Missing 'url' query parameter. Usage: /?url=<url>", http.StatusBadRequest)
@@ -377,10 +426,12 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	domain := extractDomain(rawURL)
 
+	// Check cache first
 	if data, contentType, err := getCachedFavicon(domain); err == nil {
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "public, max-age=86400") // 24 hours browser cache
+		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("X-Response-Time", fmt.Sprintf("%.2fms", float64(time.Since(start).Nanoseconds())/1000000))
 
 		_, err = w.Write(data)
 		if err != nil {
@@ -390,16 +441,23 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	baseURL := "https://" + domain
-	faviconURLs := getFaviconURLs(baseURL)
+	faviconURLGroups := getFaviconURLs(baseURL)
 
-	if result := fetchFaviconsParallel(faviconURLs, 1*time.Second); result != nil {
+	// Try to fetch favicon with optimized timeout
+	fetchStart := time.Now()
+	if result := fetchFaviconsParallel(faviconURLGroups, 2*time.Second); result != nil {
+		fetchTime := time.Since(fetchStart)
+		log.Printf("Favicon fetch for %s took %.2fms", domain, float64(fetchTime.Nanoseconds())/1000000)
+
+		// Cache the successful result
 		if err := saveFavicon(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
 
 		w.Header().Set("Content-Type", result.ContentType)
-		w.Header().Set("Cache-Control", "public, max-age=86400") // 24 hours browser cache
+		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("X-Cache", "MISS")
+		w.Header().Set("X-Response-Time", fmt.Sprintf("%.2fms", float64(time.Since(start).Nanoseconds())/1000000))
 
 		_, err := w.Write(result.Data)
 		if err != nil {
@@ -408,6 +466,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fallback to default favicon
 	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
 	if err != nil {
 		handleServerError(w, r, err)
@@ -416,8 +475,9 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	w.Header().Set("Content-Type", "image/x-icon")
-	w.Header().Set("Cache-Control", "public, max-age=86400") // 24 hours browser cache
+	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("X-Cache", "DEFAULT")
+	w.Header().Set("X-Response-Time", fmt.Sprintf("%.2fms", float64(time.Since(start).Nanoseconds())/1000000))
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
