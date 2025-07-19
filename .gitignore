@@ -24,6 +24,7 @@ tmp
 # Go workspace file
 go.work
 go.work.sum
+favicon.db
 
 # env file
 .env
