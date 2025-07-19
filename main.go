@@ -1,13 +1,85 @@
 package main
 
 import (
+	"database/sql"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/pressly/goose/v3"
 	"github.com/wajeht/favicon/assets"
 )
+
+var db *sql.DB
+
+type FaviconCache struct {
+	ID          int
+	Domain      string
+	Data        []byte
+	ContentType string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+}
+
+func initDB() error {
+	var err error
+	db, err = sql.Open("sqlite3", "./favicon.db")
+	if err != nil {
+		return err
+	}
+
+	if err := db.Ping(); err != nil {
+		return err
+	}
+
+	goose.SetBaseFS(assets.Embeddedfiles)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return err
+	}
+
+	if err := goose.Up(db, "migrations"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func getCachedFavicon(domain string) (*FaviconCache, error) {
+	var favicon FaviconCache
+	query := `
+		SELECT id, domain, data, content_type, created_at, expires_at
+		FROM favicons
+		WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP
+	`
+
+	err := db.QueryRow(query, domain).Scan(
+		&favicon.ID,
+		&favicon.Domain,
+		&favicon.Data,
+		&favicon.ContentType,
+		&favicon.CreatedAt,
+		&favicon.ExpiresAt,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &favicon, nil
+}
+
+func saveFavicon(domain string, data []byte, contentType string) error {
+	query := `
+		INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at)
+		VALUES (?, ?, ?, datetime('now', '+24 hours'))
+	`
+
+	_, err := db.Exec(query, domain, data, contentType)
+	return err
+}
 
 func extractDomain(rawURL string) string {
 	url := rawURL
@@ -134,6 +206,19 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	domain := extractDomain(rawURL)
+
+	if cached, err := getCachedFavicon(domain); err == nil {
+		w.Header().Set("Content-Type", cached.ContentType)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("X-Cache", "HIT")
+
+		_, err = w.Write(cached.Data)
+		if err != nil {
+			handleServerError(w, r, err)
+		}
+		return
+	}
+
 	baseURL := "https://" + domain
 	faviconURLs := getFaviconURLs(baseURL)
 
@@ -159,8 +244,14 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 
 		responseContentType := getContentType(url, contentType)
+
+		if err := saveFavicon(domain, faviconData, responseContentType); err != nil {
+			log.Printf("Failed to cache favicon for %s: %v", domain, err)
+		}
+
 		w.Header().Set("Content-Type", responseContentType)
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("X-Cache", "MISS")
 
 		_, err = w.Write(faviconData)
 		if err != nil {
@@ -178,6 +269,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "image/x-icon")
 	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("X-Cache", "DEFAULT")
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
@@ -185,6 +277,11 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	if err := initDB(); err != nil {
+		log.Fatal("Failed to initialize database:", err)
+	}
+	defer db.Close()
+
 	mux := http.NewServeMux()
 
 	staticHandler := http.FileServer(http.FS(assets.Embeddedfiles))
