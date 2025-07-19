@@ -17,7 +17,7 @@ var db *sql.DB
 
 func initDB() error {
 	var err error
-	db, err = sql.Open("sqlite3", "./data/favicon.db")
+	db, err = sql.Open("sqlite3", "./favicon.db")
 	if err != nil {
 		return err
 	}
@@ -284,6 +284,17 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if err := db.Ping(); err != nil {
+		http.Error(w, "Database connection failed", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte("ok"))
+}
+
 func main() {
 	if err := initDB(); err != nil {
 		log.Fatal("Failed to initialize database:", err)
@@ -306,6 +317,7 @@ func main() {
 	mux.Handle("GET /static/", stripTrailingSlashMiddleware(staticHandler))
 	mux.HandleFunc("GET /robots.txt", handleRobotsTxt)
 	mux.HandleFunc("GET /favicon.ico", handleFavicon)
+	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /", handleHome)
 
 	log.Println("Server is running at http://localhost")
