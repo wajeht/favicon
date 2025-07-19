@@ -9,7 +9,10 @@ CREATE TABLE favicons (
     expires_at DATETIME NOT NULL
 );
 
-CREATE INDEX idx_favicons_domain ON favicons(domain);
+-- Create composite index for the main query pattern
+CREATE INDEX idx_favicons_domain_expires ON favicons(domain, expires_at);
+
+-- Create index for cleanup operations
 CREATE INDEX idx_favicons_expires_at ON favicons(expires_at);
 -- +goose StatementEnd
 

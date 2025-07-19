@@ -15,15 +15,6 @@ import (
 
 var db *sql.DB
 
-type FaviconCache struct {
-	ID          int
-	Domain      string
-	Data        []byte
-	ContentType string
-	CreatedAt   time.Time
-	ExpiresAt   time.Time
-}
-
 func initDB() error {
 	var err error
 	db, err = sql.Open("sqlite3", "./favicon.db")
@@ -32,6 +23,11 @@ func initDB() error {
 	}
 
 	if err := db.Ping(); err != nil {
+		return err
+	}
+
+	_, err = db.Exec("PRAGMA journal_mode=WAL;")
+	if err != nil {
 		return err
 	}
 
@@ -44,31 +40,43 @@ func initDB() error {
 		return err
 	}
 
+	if err := cleanupExpiredFavicons(); err != nil {
+		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
+	}
+
 	return nil
 }
 
-func getCachedFavicon(domain string) (*FaviconCache, error) {
-	var favicon FaviconCache
+func cleanupExpiredFavicons() error {
+	query := `DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`
+	result, err := db.Exec(query)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected > 0 {
+		log.Printf("Cleaned up %d expired favicon entries", rowsAffected)
+	}
+
+	return nil
+}
+
+func getCachedFavicon(domain string) ([]byte, string, error) {
+	var data []byte
+	var contentType string
 	query := `
-		SELECT id, domain, data, content_type, created_at, expires_at
+		SELECT data, content_type
 		FROM favicons
 		WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP
 	`
 
-	err := db.QueryRow(query, domain).Scan(
-		&favicon.ID,
-		&favicon.Domain,
-		&favicon.Data,
-		&favicon.ContentType,
-		&favicon.CreatedAt,
-		&favicon.ExpiresAt,
-	)
-
+	err := db.QueryRow(query, domain).Scan(&data, &contentType)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return &favicon, nil
+	return data, contentType, nil
 }
 
 func saveFavicon(domain string, data []byte, contentType string) error {
@@ -207,12 +215,12 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	domain := extractDomain(rawURL)
 
-	if cached, err := getCachedFavicon(domain); err == nil {
-		w.Header().Set("Content-Type", cached.ContentType)
+	if data, contentType, err := getCachedFavicon(domain); err == nil {
+		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		w.Header().Set("X-Cache", "HIT")
 
-		_, err = w.Write(cached.Data)
+		_, err = w.Write(data)
 		if err != nil {
 			handleServerError(w, r, err)
 		}
@@ -281,6 +289,16 @@ func main() {
 		log.Fatal("Failed to initialize database:", err)
 	}
 	defer db.Close()
+
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := cleanupExpiredFavicons(); err != nil {
+				log.Printf("Periodic cleanup failed: %v", err)
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 
