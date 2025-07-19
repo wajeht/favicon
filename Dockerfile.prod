@@ -10,10 +10,9 @@ RUN go mod download
 
 COPY . .
 
-# Build with more explicit flags and verify the binary exists
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags '-extldflags "-static"' -o favicon . && \
-    ls -la /app/favicon && \
-    file /app/favicon
+# Build with CGO enabled for SQLite
+RUN CGO_ENABLED=1 go build -o favicon . && \
+    ls -la /app/favicon
 
 FROM alpine:latest
 
@@ -21,14 +20,16 @@ RUN apk --no-cache add ca-certificates sqlite
 
 RUN addgroup -g 1001 -S favicon && adduser -S favicon -u 1001 -G favicon
 
+# Create data directory for database
+RUN mkdir -p /data && chown favicon:favicon /data
+
 WORKDIR /app
 
 # Copy and verify the binary
 COPY --chown=favicon:favicon --from=builder /app/favicon ./favicon
 
-# Make sure the binary is executable and show info
+# Make sure the binary is executable
 RUN ls -la /app/ && \
-    file /app/favicon && \
     chmod +x /app/favicon
 
 USER favicon

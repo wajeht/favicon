@@ -52,7 +52,7 @@ type FaviconResult struct {
 
 func initDB() error {
 	var err error
-	db, err = sql.Open("sqlite3", "./db.sqlite")
+	db, err = sql.Open("sqlite3", "/data/db.sqlite")
 	if err != nil {
 		return err
 	}
