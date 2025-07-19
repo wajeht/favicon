@@ -4,67 +4,70 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/wajeht/favicon/assets"
 )
 
-func getHomeHandler(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte("getHomeHandler()"))
+func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/") {
+			handleNotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
-func notFoundHandler(w http.ResponseWriter, r *http.Request, err error) {
-	message := "The requested resource could not be found"
-	http.Error(w, message, http.StatusNotFound)
+func handleHome(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("handleHome()"))
 }
 
-func serverErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	message := "The server encountered a problem and could not process your request"
-	http.Error(w, message, http.StatusInternalServerError)
+func handleNotFound(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "The requested resource could not be found", http.StatusNotFound)
 }
 
-func getRobotsDotTxtHandler(w http.ResponseWriter, r *http.Request) {
-	f, err := assets.Embeddedfiles.Open("static/favicon.ico")
+func handleServerError(w http.ResponseWriter, r *http.Request, err error) {
+	log.Println("Internal server error:", err)
+	http.Error(w, "The server encountered a problem and could not process your request", http.StatusInternalServerError)
+}
+
+func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	file, err := assets.Embeddedfiles.Open("static/robots.txt")
 	if err != nil {
-		serverErrorHandler(w, r, err)
+		handleServerError(w, r, err)
 		return
 	}
-	defer f.Close()
+	defer file.Close()
 
 	w.Header().Set("Content-Type", "text/plain")
-	io.Copy(w, f)
-
+	io.Copy(w, file)
 }
 
-func getFaviconDotIcoHandler(w http.ResponseWriter, r *http.Request) {
-
-	f, err := assets.Embeddedfiles.Open("static/favicon.ico")
+func handleFavicon(w http.ResponseWriter, r *http.Request) {
+	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
 	if err != nil {
-		serverErrorHandler(w, r, err)
+		handleServerError(w, r, err)
 		return
 	}
-	defer f.Close()
+	defer file.Close()
 
 	w.Header().Set("Content-Type", "image/x-icon")
-	io.Copy(w, f)
+	io.Copy(w, file)
 }
 
 func main() {
 	mux := http.NewServeMux()
 
-	fileServer := http.FileServer(http.FS(assets.Embeddedfiles))
+	staticHandler := http.FileServer(http.FS(assets.Embeddedfiles))
 
-	mux.Handle("GET /static/", fileServer)
+	mux.Handle("GET /static/", stripTrailingSlashMiddleware(staticHandler))
+	mux.HandleFunc("GET /robots.txt", handleRobotsTxt)
+	mux.HandleFunc("GET /favicon.ico", handleFavicon)
+	mux.HandleFunc("GET /{$}", handleHome)
 
-	mux.HandleFunc("GET /robots.txt", getRobotsDotTxtHandler)
-
-	mux.HandleFunc("GET /favicon.ico", getFaviconDotIcoHandler)
-
-	mux.HandleFunc("GET /{$}", getHomeHandler)
-
-	log.Println("Server was started on http://localhost")
-
+	log.Println("Server is running at http://localhost")
 	err := http.ListenAndServe(":80", mux)
-
 	if err != nil {
 		log.Fatal(err)
 	}
