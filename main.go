@@ -30,13 +30,12 @@ func extractDomain(rawURL string) string {
 	}
 
 	host := strings.ToLower(url)
-
 	return host
 }
 
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/") {
+		if strings.HasSuffix(r.URL.Path, "/") && r.URL.Path != "/static/" {
 			handleNotFound(w, r)
 			return
 		}
@@ -62,7 +61,10 @@ func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	w.Header().Set("Content-Type", "text/plain")
-	io.Copy(w, file)
+	_, err = io.Copy(w, file)
+	if err != nil {
+		handleServerError(w, r, err)
+	}
 }
 
 func handleFavicon(w http.ResponseWriter, r *http.Request) {
@@ -74,33 +76,36 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	w.Header().Set("Content-Type", "image/x-icon")
-	io.Copy(w, file)
+	_, err = io.Copy(w, file)
+	if err != nil {
+		handleServerError(w, r, err)
+	}
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	rawUrl := r.URL.Query().Get("url")
-
 	if rawUrl == "" {
-		http.Error(w, "URL must not be empty", http.StatusUnprocessableEntity)
+		http.Error(w, "Missing 'url' query parameter.\nUsage: /?url=<url>", http.StatusBadRequest)
 		return
 	}
 
 	domain := extractDomain(rawUrl)
-
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(domain))
+	_, err := w.Write([]byte(domain))
+	if err != nil {
+		handleServerError(w, r, err)
+	}
 }
 
 func main() {
 	mux := http.NewServeMux()
 
 	staticHandler := http.FileServer(http.FS(assets.Embeddedfiles))
-
 	mux.Handle("GET /static/", stripTrailingSlashMiddleware(staticHandler))
 	mux.HandleFunc("GET /robots.txt", handleRobotsTxt)
 	mux.HandleFunc("GET /favicon.ico", handleFavicon)
-	mux.HandleFunc("GET /{$}", handleHome)
+	mux.HandleFunc("GET /", handleHome)
 
 	log.Println("Server is running at http://localhost")
 	err := http.ListenAndServe(":80", mux)
