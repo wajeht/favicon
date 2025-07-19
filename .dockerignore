@@ -27,3 +27,14 @@ Dockerfile
 # OS files
 .DS_Store
 Thumbs.db
+
+# Build artifacts
+favicon
+favicon.db
+
+# Go build cache
+.cache/
+
+# Test coverage files
+*.coverprofile
+coverage.out
