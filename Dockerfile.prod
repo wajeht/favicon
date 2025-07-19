@@ -10,7 +10,10 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o favicon .
+# Build with more explicit flags and verify the binary exists
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags '-extldflags "-static"' -o favicon . && \
+    ls -la /app/favicon && \
+    file /app/favicon
 
 FROM alpine:latest
 
@@ -20,9 +23,15 @@ RUN adduser -D -s /bin/sh favicon
 
 WORKDIR /app
 
-COPY --from=builder /app/favicon .
+# Copy and verify the binary
+COPY --from=builder /app/favicon ./favicon
 
-RUN chown favicon:favicon /app
+# Make sure the binary is executable and show info
+RUN ls -la /app/ && \
+    file /app/favicon && \
+    chmod +x /app/favicon
+
+RUN chown favicon:favicon /app/favicon
 
 USER favicon
 
