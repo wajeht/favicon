@@ -12,7 +12,7 @@ run: build
 	@./favicon
 
 clean:
-	@rm -f favicon db.sqlite db.sqlite-shm db.sqlite-wal
+	@rm -f favicon* db.sqlite db.sqlite-shm db.sqlite-wal
 
 commit:
 	@git add -A
