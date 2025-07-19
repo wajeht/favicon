@@ -402,8 +402,6 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
 		http.Error(w, "Missing 'url' query parameter. Usage: /?url=<url>", http.StatusBadRequest)
@@ -420,7 +418,6 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("X-Cache", "HIT")
-		w.Header().Set("X-Response-Time", fmt.Sprintf("%.2fms", float64(time.Since(start).Nanoseconds())/1000000))
 
 		_, err = w.Write(data)
 		if err != nil {
@@ -432,11 +429,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	baseURL := "https://" + domain
 	faviconURLGroups := getFaviconURLs(baseURL)
 
-	fetchStart := time.Now()
 	if result := fetchFaviconsParallel(faviconURLGroups, 2*time.Second); result != nil {
-		fetchTime := time.Since(fetchStart)
-		log.Printf("Favicon fetch for %s took %.2fms", domain, float64(fetchTime.Nanoseconds())/1000000)
-
 		if err := saveFavicon(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
@@ -444,7 +437,6 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", result.ContentType)
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Response-Time", fmt.Sprintf("%.2fms", float64(time.Since(start).Nanoseconds())/1000000))
 
 		_, err := w.Write(result.Data)
 		if err != nil {
@@ -463,7 +455,6 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/x-icon")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("X-Cache", "DEFAULT")
-	w.Header().Set("X-Response-Time", fmt.Sprintf("%.2fms", float64(time.Since(start).Nanoseconds())/1000000))
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
