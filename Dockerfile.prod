@@ -19,19 +19,17 @@ FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates sqlite
 
-RUN adduser -D -s /bin/sh favicon
+RUN addgroup -g 1001 -S favicon && adduser -S favicon -u 1001 -G favicon
 
 WORKDIR /app
 
 # Copy and verify the binary
-COPY --from=builder /app/favicon ./favicon
+COPY --chown=favicon:favicon --from=builder /app/favicon ./favicon
 
 # Make sure the binary is executable and show info
 RUN ls -la /app/ && \
     file /app/favicon && \
     chmod +x /app/favicon
-
-RUN chown favicon:favicon /app/favicon
 
 USER favicon
 
