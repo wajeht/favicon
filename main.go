@@ -4,10 +4,19 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/wajeht/favicon/assets"
 )
+
+func extractDomainAndTLD(rawUrl string) string {
+	parsedUrl, err := url.Parse(rawUrl)
+	if err != nil {
+		return rawUrl
+	}
+	return parsedUrl.Hostname()
+}
 
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,14 +62,16 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Query().Get("url")
+	rawUrl := r.URL.Query().Get("url")
 
-	if url == "" {
+	if rawUrl == "" {
 		http.Error(w, "URL must not be empty", http.StatusUnprocessableEntity)
 		return
 	}
 
-	w.Write([]byte(url))
+	domain := extractDomainAndTLD(rawUrl)
+
+	w.Write([]byte(domain))
 }
 
 func main() {
