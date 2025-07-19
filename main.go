@@ -1,19 +1,46 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
+	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pressly/goose/v3"
 	"github.com/wajeht/favicon/assets"
+	"golang.org/x/image/draw"
 )
 
 var db *sql.DB
+
+var httpClient = &http.Client{
+	Timeout: 5 * time.Second, // 5 seconds
+	Transport: &http.Transport{
+		MaxIdleConns:        100,              // 100 connections
+		MaxIdleConnsPerHost: 10,               // 10 connections per host
+		IdleConnTimeout:     30 * time.Second, // 30 seconds
+		DisableKeepAlives:   false,            // Keep connections alive
+		WriteBufferSize:     32 * 1024,        // 32KB
+		ReadBufferSize:      32 * 1024,        // 32KB
+	},
+}
+
+type FaviconResult struct {
+	Data        []byte
+	ContentType string
+	URL         string
+	Error       error
+}
 
 func initDB() error {
 	var err error
@@ -22,13 +49,26 @@ func initDB() error {
 		return err
 	}
 
+	db.SetMaxOpenConns(25)                 // 25 connections
+	db.SetMaxIdleConns(10)                 // 10 connections
+	db.SetConnMaxLifetime(5 * time.Minute) // 5 minutes
+
 	if err := db.Ping(); err != nil {
 		return err
 	}
 
-	_, err = db.Exec("PRAGMA journal_mode=WAL;")
-	if err != nil {
-		return err
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL;",    // Write-Ahead Logging
+		"PRAGMA synchronous=NORMAL;",  // Normal synchronous mode
+		"PRAGMA cache_size=10000;",    // 10MB cache
+		"PRAGMA temp_store=MEMORY;",   // Use memory for temporary storage
+		"PRAGMA mmap_size=268435456;", // 256MB
+	}
+
+	for _, pragma := range pragmas {
+		if _, err = db.Exec(pragma); err != nil {
+			log.Printf("Warning: Failed to set pragma %s: %v", pragma, err)
+		}
 	}
 
 	goose.SetBaseFS(assets.Embeddedfiles)
@@ -121,6 +161,128 @@ func getFaviconURLs(baseURL string) []string {
 		baseURL + "/apple-touch-icon-152x152.png",
 		baseURL + "/apple-touch-icon-180x180.png",
 	}
+}
+
+func resizeImage(data []byte, contentType string) ([]byte, error) {
+	var img image.Image
+	var err error
+
+	reader := bytes.NewReader(data)
+
+	switch {
+	case strings.Contains(contentType, "png"):
+		img, err = png.Decode(reader)
+	case strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg"):
+		img, err = jpeg.Decode(reader)
+	default:
+		return data, nil
+	}
+
+	if err != nil {
+		return data, nil
+	}
+
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+
+	if width <= 16 && height <= 16 {
+		return data, nil
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
+
+	var buf bytes.Buffer
+	if strings.Contains(contentType, "png") {
+		err = png.Encode(&buf, dst)
+	} else {
+		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90})
+	}
+
+	if err != nil {
+		return data, nil
+	}
+
+	if buf.Len() < len(data) {
+		return buf.Bytes(), nil
+	}
+
+	return data, nil
+}
+
+func fetchFavicon(ctx context.Context, url string) FaviconResult {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return FaviconResult{Error: err, URL: url}
+	}
+
+	req.Header.Set("User-Agent", "FaviconBot/1.0")
+	req.Header.Set("Accept", "image/*")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return FaviconResult{Error: err, URL: url}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return FaviconResult{Error: fmt.Errorf("status %d", resp.StatusCode), URL: url}
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if !isImage(contentType) {
+		return FaviconResult{Error: fmt.Errorf("not an image"), URL: url}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	if err != nil {
+		return FaviconResult{Error: err, URL: url}
+	}
+
+	optimizedData, _ := resizeImage(data, contentType)
+
+	return FaviconResult{
+		Data:        optimizedData,
+		ContentType: getContentType(url, contentType),
+		URL:         url,
+	}
+}
+
+func fetchFaviconsParallel(urls []string, timeout time.Duration) *FaviconResult {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	resultChan := make(chan FaviconResult, len(urls))
+	var wg sync.WaitGroup
+
+	for _, url := range urls {
+		wg.Add(1)
+		go func(u string) {
+			defer wg.Done()
+			result := fetchFavicon(ctx, u)
+			if result.Error == nil {
+				select {
+				case resultChan <- result:
+				case <-ctx.Done():
+				}
+			}
+		}(url)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	for result := range resultChan {
+		if result.Error == nil {
+			cancel()
+			return &result
+		}
+	}
+
+	return nil
 }
 
 func getContentType(url string, respContentType string) string {
@@ -217,7 +379,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	if data, contentType, err := getCachedFavicon(domain); err == nil {
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Cache-Control", "public, max-age=86400") // 24 hours browser cache
 		w.Header().Set("X-Cache", "HIT")
 
 		_, err = w.Write(data)
@@ -230,38 +392,16 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	baseURL := "https://" + domain
 	faviconURLs := getFaviconURLs(baseURL)
 
-	for _, url := range faviconURLs {
-		resp, err := http.Get(url)
-		if err != nil {
-			continue
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			continue
-		}
-
-		contentType := resp.Header.Get("Content-Type")
-		if !isImage(contentType) {
-			continue
-		}
-
-		faviconData, err := io.ReadAll(resp.Body)
-		if err != nil {
-			continue
-		}
-
-		responseContentType := getContentType(url, contentType)
-
-		if err := saveFavicon(domain, faviconData, responseContentType); err != nil {
+	if result := fetchFaviconsParallel(faviconURLs, 1*time.Second); result != nil {
+		if err := saveFavicon(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
 
-		w.Header().Set("Content-Type", responseContentType)
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Content-Type", result.ContentType)
+		w.Header().Set("Cache-Control", "public, max-age=86400") // 24 hours browser cache
 		w.Header().Set("X-Cache", "MISS")
 
-		_, err = w.Write(faviconData)
+		_, err := w.Write(result.Data)
 		if err != nil {
 			handleServerError(w, r, err)
 		}
@@ -276,7 +416,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	w.Header().Set("Content-Type", "image/x-icon")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "public, max-age=86400") // 24 hours browser cache
 	w.Header().Set("X-Cache", "DEFAULT")
 	_, err = io.Copy(w, file)
 	if err != nil {
