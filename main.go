@@ -402,7 +402,9 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	if data, contentType, err := getCachedFavicon(domain); err == nil {
 		etag := fmt.Sprintf(`"fav-%s"`, domain)
 
-		if r.Header.Get("If-None-Match") == etag {
+		// Check ETag match (handle Cloudflare's W/ prefix)
+		clientETag := r.Header.Get("If-None-Match")
+		if clientETag == etag || clientETag == "W/"+etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
