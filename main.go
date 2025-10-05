@@ -52,13 +52,13 @@ type FaviconResult struct {
 
 func initDB() error {
 	var err error
-	db, err = sql.Open("sqlite3", "/data/db.sqlite")
+	db, err = sql.Open("sqlite3", "/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
 		return err
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
+	db.SetMaxOpenConns(100)
+	db.SetMaxIdleConns(25)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
