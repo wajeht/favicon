@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -53,6 +55,14 @@ type FaviconResult struct {
 
 type FaviconRepository struct {
 	db *sql.DB
+}
+
+type Manifest struct {
+	Icons []struct {
+		Src   string `json:"src"`
+		Sizes string `json:"sizes"`
+		Type  string `json:"type"`
+	} `json:"icons"`
 }
 
 func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
@@ -157,8 +167,40 @@ func extractDomain(rawURL string) string {
 	return strings.ToLower(url)
 }
 
+func getManifestIcons(baseURL string) []string {
+	resp, err := httpClient.Get(baseURL + "/manifest.json")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var manifest Manifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return nil
+	}
+
+	var icons []string
+	for _, icon := range manifest.Icons {
+		iconURL := icon.Src
+		if strings.HasPrefix(iconURL, "./") {
+			iconURL = strings.TrimPrefix(iconURL, ".")
+		}
+		if strings.HasPrefix(iconURL, "/") {
+			icons = append(icons, baseURL+iconURL)
+		} else {
+			parsed, err := url.Parse(iconURL)
+			if err == nil && parsed.IsAbs() {
+				icons = append(icons, iconURL)
+			} else {
+				icons = append(icons, baseURL+"/"+iconURL)
+			}
+		}
+	}
+	return icons
+}
+
 func getFaviconURLs(baseURL, domain string) [][]string {
-	return [][]string{
+	groups := [][]string{
 		{
 			baseURL + "/favicon.ico",
 			baseURL + "/favicon.png",
@@ -175,6 +217,12 @@ func getFaviconURLs(baseURL, domain string) [][]string {
 			baseURL + "/apple-touch-icon-120x120.png",
 		},
 	}
+
+	if manifestIcons := getManifestIcons(baseURL); len(manifestIcons) > 0 {
+		groups = append(groups, manifestIcons)
+	}
+
+	return groups
 }
 
 func resizeImage(data []byte, contentType string) ([]byte, error) {
