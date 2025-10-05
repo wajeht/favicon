@@ -354,7 +354,6 @@ func handleNotFound(w http.ResponseWriter, r *http.Request) {
 
 func handleServerError(w http.ResponseWriter, r *http.Request, err error) {
 	log.Println("Internal server error:", err)
-	http.Error(w, "The server encountered a problem and could not process your request", http.StatusInternalServerError)
 }
 
 func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
@@ -401,8 +400,16 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	domain := extractDomain(rawURL)
 
 	if data, contentType, err := getCachedFavicon(domain); err == nil {
+		etag := fmt.Sprintf(`"fav-%s"`, domain)
+
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+
 		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+		w.Header().Set("ETag", etag)
 		w.Header().Set("X-Cache", "HIT")
 
 		_, err = w.Write(data)
