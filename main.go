@@ -11,8 +11,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -475,12 +478,18 @@ func main() {
 	defer getFaviconStmt.Close()
 	defer saveFaviconStmt.Close()
 
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(6 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			if err := cleanupExpiredFavicons(); err != nil {
-				log.Printf("Periodic cleanup failed: %v", err)
+		for {
+			select {
+			case <-ticker.C:
+				if err := cleanupExpiredFavicons(); err != nil {
+					log.Printf("Periodic cleanup failed: %v", err)
+				}
+			case <-cleanupCtx.Done():
+				return
 			}
 		}
 	}()
@@ -494,9 +503,33 @@ func main() {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /", handleHome)
 
-	log.Println("Server is running at http://localhost")
-	err := http.ListenAndServe(":80", mux)
-	if err != nil {
-		log.Fatal("Server failed to start:", err)
+	server := &http.Server{
+		Addr:    ":80",
+		Handler: mux,
 	}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		log.Println("Server is running at http://localhost")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal("Server failed to start:", err)
+		}
+	}()
+
+	<-quit
+	log.Println("Shutting down server...")
+
+	cleanupCancel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("Server forced to shutdown: %v", err)
+		return
+	}
+
+	log.Println("Server gracefully stopped")
 }
