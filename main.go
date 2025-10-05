@@ -369,6 +369,11 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		handleNotFound(w, r)
+		return
+	}
+
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
 		http.Error(w, "Missing 'url' query parameter. Usage: /?url=<url>", http.StatusBadRequest)
