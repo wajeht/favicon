@@ -204,6 +204,7 @@ func getFaviconURLs(baseURL, domain string) [][]string {
 		{
 			baseURL + "/favicon.ico",
 			baseURL + "/favicon.png",
+			baseURL + "/favicon.svg",
 			baseURL + "/" + domain + ".ico",
 			baseURL + "/" + domain + ".png",
 		},
