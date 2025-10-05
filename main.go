@@ -24,10 +24,16 @@ import (
 	"golang.org/x/image/draw"
 )
 
-var db *sql.DB
+type FaviconResult struct {
+	Data        []byte
+	ContentType string
+	URL         string
+	Error       error
+}
 
-var getFaviconStmt *sql.Stmt
-var saveFaviconStmt *sql.Stmt
+var (
+	repo *FaviconRepository
+)
 
 var httpClient = &http.Client{
 	Timeout: 1 * time.Second,
@@ -46,18 +52,14 @@ var httpClient = &http.Client{
 	},
 }
 
-type FaviconResult struct {
-	Data        []byte
-	ContentType string
-	URL         string
-	Error       error
+type FaviconRepository struct {
+	db *sql.DB
 }
 
-func initDB() error {
-	var err error
-	db, err = sql.Open("sqlite3", "/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
+func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	db.SetMaxOpenConns(100)
@@ -65,9 +67,27 @@ func initDB() error {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
-		return err
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
+	repo := &FaviconRepository{db: db}
+
+	if err := repo.configurePragmas(); err != nil {
+		return nil, err
+	}
+
+	if err := repo.runMigrations(); err != nil {
+		return nil, err
+	}
+
+	if err := repo.CleanupExpired(); err != nil {
+		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
+	}
+
+	return repo, nil
+}
+
+func (r *FaviconRepository) configurePragmas() error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL;",
 		"PRAGMA synchronous=NORMAL;",
@@ -77,49 +97,54 @@ func initDB() error {
 	}
 
 	for _, pragma := range pragmas {
-		if _, err = db.Exec(pragma); err != nil {
+		if _, err := r.db.Exec(pragma); err != nil {
 			log.Printf("Warning: Failed to set pragma %s: %v", pragma, err)
 		}
-	}
-
-	goose.SetBaseFS(assets.Embeddedfiles)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return err
-	}
-
-	if err := goose.Up(db, "migrations"); err != nil {
-		return err
-	}
-
-	getFaviconStmt, err = db.Prepare(`
-	SELECT data, content_type
-	FROM favicons
-	WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP
-`)
-	if err != nil {
-		return err
-	}
-
-	saveFaviconStmt, err = db.Prepare(`
-	INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at)
-	VALUES (?, ?, ?, datetime('now', '+24 hours'))
-`)
-	if err != nil {
-		return err
-	}
-
-	if err := cleanupExpiredFavicons(); err != nil {
-		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
 	}
 
 	return nil
 }
 
-func cleanupExpiredFavicons() error {
-	query := `DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`
-	result, err := db.Exec(query)
+func (r *FaviconRepository) runMigrations() error {
+	goose.SetBaseFS(assets.Embeddedfiles)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(r.db, "migrations"); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	return nil
+}
+
+func (r *FaviconRepository) Get(domain string) ([]byte, string, error) {
+	query := `SELECT data, content_type FROM favicons WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP`
+
+	var data []byte
+	var contentType string
+	err := r.db.QueryRow(query, domain).Scan(&data, &contentType)
 	if err != nil {
-		return err
+		return nil, "", err
+	}
+	return data, contentType, nil
+}
+
+func (r *FaviconRepository) Save(domain string, data []byte, contentType string) error {
+	query := `INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at) VALUES (?, ?, ?, datetime('now', '+24 hours'))`
+
+	_, err := r.db.Exec(query, domain, data, contentType)
+	if err != nil {
+		return fmt.Errorf("failed to save favicon: %w", err)
+	}
+	return nil
+}
+
+func (r *FaviconRepository) CleanupExpired() error {
+	query := `DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`
+	result, err := r.db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup expired favicons: %w", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -130,19 +155,15 @@ func cleanupExpiredFavicons() error {
 	return nil
 }
 
-func getCachedFavicon(domain string) ([]byte, string, error) {
-	var data []byte
-	var contentType string
-	err := getFaviconStmt.QueryRow(domain).Scan(&data, &contentType)
-	if err != nil {
-		return nil, "", err
-	}
-	return data, contentType, nil
+func (r *FaviconRepository) Ping() error {
+	return r.db.Ping()
 }
 
-func saveFavicon(domain string, data []byte, contentType string) error {
-	_, err := saveFaviconStmt.Exec(domain, data, contentType)
-	return err
+func (r *FaviconRepository) Close() error {
+	if r.db != nil {
+		return r.db.Close()
+	}
+	return nil
 }
 
 func extractDomain(rawURL string) string {
@@ -402,7 +423,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	domain := extractDomain(rawURL)
 
-	if data, contentType, err := getCachedFavicon(domain); err == nil {
+	if data, contentType, err := repo.Get(domain); err == nil {
 		etag := fmt.Sprintf(`"fav-%s"`, domain)
 
 		// Check ETag match (handle Cloudflare's W/ prefix)
@@ -428,7 +449,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	faviconURLGroups := getFaviconURLs(baseURL)
 
 	if result := fetchFaviconsParallel(faviconURLGroups, 180*time.Millisecond); result != nil {
-		if err := saveFavicon(domain, result.Data, result.ContentType); err != nil {
+		if err := repo.Save(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
 
@@ -460,7 +481,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if err := db.Ping(); err != nil {
+	if err := repo.Ping(); err != nil {
 		http.Error(w, "Database connection failed", http.StatusServiceUnavailable)
 		return
 	}
@@ -471,12 +492,12 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	if err := initDB(); err != nil {
+	var err error
+	repo, err = NewFaviconRepository("/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
+	if err != nil {
 		log.Fatal("Failed to initialize database:", err)
 	}
-	defer db.Close()
-	defer getFaviconStmt.Close()
-	defer saveFaviconStmt.Close()
+	defer repo.Close()
 
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	go func() {
@@ -485,7 +506,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := cleanupExpiredFavicons(); err != nil {
+				if err := repo.CleanupExpired(); err != nil {
 					log.Printf("Periodic cleanup failed: %v", err)
 				}
 			case <-cleanupCtx.Done():
