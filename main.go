@@ -157,11 +157,13 @@ func extractDomain(rawURL string) string {
 	return strings.ToLower(url)
 }
 
-func getFaviconURLs(baseURL string) [][]string {
+func getFaviconURLs(baseURL, domain string) [][]string {
 	return [][]string{
 		{
 			baseURL + "/favicon.ico",
 			baseURL + "/favicon.png",
+			baseURL + "/" + domain + ".ico",
+			baseURL + "/" + domain + ".png",
 		},
 		{
 			baseURL + "/apple-touch-icon.png",
@@ -409,7 +411,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	baseURL := "https://" + domain
-	faviconURLGroups := getFaviconURLs(baseURL)
+	faviconURLGroups := getFaviconURLs(baseURL, domain)
 
 	if result := fetchFaviconsParallel(faviconURLGroups, 180*time.Millisecond); result != nil {
 		if err := repo.Save(domain, result.Data, result.ContentType); err != nil {
