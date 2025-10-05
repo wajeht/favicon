@@ -24,32 +24,31 @@ import (
 	"golang.org/x/image/draw"
 )
 
+var (
+	repo       *FaviconRepository
+	httpClient = &http.Client{
+		Timeout: 1 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:          200,
+			MaxIdleConnsPerHost:   30,
+			MaxConnsPerHost:       50,
+			IdleConnTimeout:       60 * time.Second,
+			DisableKeepAlives:     false,
+			WriteBufferSize:       64 * 1024,
+			ReadBufferSize:        64 * 1024,
+			TLSHandshakeTimeout:   500 * time.Millisecond,
+			ResponseHeaderTimeout: 500 * time.Millisecond,
+			ExpectContinueTimeout: 200 * time.Millisecond,
+			ForceAttemptHTTP2:     true,
+		},
+	}
+)
+
 type FaviconResult struct {
 	Data        []byte
 	ContentType string
 	URL         string
 	Error       error
-}
-
-var (
-	repo *FaviconRepository
-)
-
-var httpClient = &http.Client{
-	Timeout: 1 * time.Second,
-	Transport: &http.Transport{
-		MaxIdleConns:          200,
-		MaxIdleConnsPerHost:   30,
-		MaxConnsPerHost:       50,
-		IdleConnTimeout:       60 * time.Second,
-		DisableKeepAlives:     false,
-		WriteBufferSize:       64 * 1024,
-		ReadBufferSize:        64 * 1024,
-		TLSHandshakeTimeout:   500 * time.Millisecond,
-		ResponseHeaderTimeout: 500 * time.Millisecond,
-		ExpectContinueTimeout: 200 * time.Millisecond,
-		ForceAttemptHTTP2:     true,
-	},
 }
 
 type FaviconRepository struct {
@@ -59,7 +58,7 @@ type FaviconRepository struct {
 func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database: %w", err)
+		return nil, err
 	}
 
 	db.SetMaxOpenConns(100)
@@ -67,27 +66,9 @@ func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
-	}
-
-	repo := &FaviconRepository{db: db}
-
-	if err := repo.configurePragmas(); err != nil {
 		return nil, err
 	}
 
-	if err := repo.runMigrations(); err != nil {
-		return nil, err
-	}
-
-	if err := repo.CleanupExpired(); err != nil {
-		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
-	}
-
-	return repo, nil
-}
-
-func (r *FaviconRepository) configurePragmas() error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL;",
 		"PRAGMA synchronous=NORMAL;",
@@ -97,33 +78,33 @@ func (r *FaviconRepository) configurePragmas() error {
 	}
 
 	for _, pragma := range pragmas {
-		if _, err := r.db.Exec(pragma); err != nil {
+		if _, err := db.Exec(pragma); err != nil {
 			log.Printf("Warning: Failed to set pragma %s: %v", pragma, err)
 		}
 	}
 
-	return nil
-}
-
-func (r *FaviconRepository) runMigrations() error {
 	goose.SetBaseFS(assets.Embeddedfiles)
 	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("failed to set goose dialect: %w", err)
+		return nil, err
 	}
 
-	if err := goose.Up(r.db, "migrations"); err != nil {
-		return fmt.Errorf("failed to run migrations: %w", err)
+	if err := goose.Up(db, "migrations"); err != nil {
+		return nil, err
 	}
 
-	return nil
+	repo := &FaviconRepository{db: db}
+
+	if err := repo.CleanupExpired(); err != nil {
+		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
+	}
+
+	return repo, nil
 }
 
 func (r *FaviconRepository) Get(domain string) ([]byte, string, error) {
-	query := `SELECT data, content_type FROM favicons WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP`
-
 	var data []byte
 	var contentType string
-	err := r.db.QueryRow(query, domain).Scan(&data, &contentType)
+	err := r.db.QueryRow(`SELECT data, content_type FROM favicons WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP`, domain).Scan(&data, &contentType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -131,27 +112,18 @@ func (r *FaviconRepository) Get(domain string) ([]byte, string, error) {
 }
 
 func (r *FaviconRepository) Save(domain string, data []byte, contentType string) error {
-	query := `INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at) VALUES (?, ?, ?, datetime('now', '+24 hours'))`
-
-	_, err := r.db.Exec(query, domain, data, contentType)
-	if err != nil {
-		return fmt.Errorf("failed to save favicon: %w", err)
-	}
-	return nil
+	_, err := r.db.Exec(`INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at) VALUES (?, ?, ?, datetime('now', '+24 hours'))`, domain, data, contentType)
+	return err
 }
 
 func (r *FaviconRepository) CleanupExpired() error {
-	query := `DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`
-	result, err := r.db.Exec(query)
+	result, err := r.db.Exec(`DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`)
 	if err != nil {
-		return fmt.Errorf("failed to cleanup expired favicons: %w", err)
+		return err
 	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected > 0 {
+	if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
 		log.Printf("Cleaned up %d expired favicon entries", rowsAffected)
 	}
-
 	return nil
 }
 
@@ -160,10 +132,7 @@ func (r *FaviconRepository) Ping() error {
 }
 
 func (r *FaviconRepository) Close() error {
-	if r.db != nil {
-		return r.db.Close()
-	}
-	return nil
+	return r.db.Close()
 }
 
 func extractDomain(rawURL string) string {
@@ -210,13 +179,11 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 	var img image.Image
 	var err error
 
-	reader := bytes.NewReader(data)
-
 	switch {
 	case strings.Contains(contentType, "png"):
-		img, err = png.Decode(reader)
+		img, err = png.Decode(bytes.NewReader(data))
 	case strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg"):
-		img, err = jpeg.Decode(reader)
+		img, err = jpeg.Decode(bytes.NewReader(data))
 	default:
 		return data, nil
 	}
@@ -226,10 +193,7 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 	}
 
 	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
-
-	if width <= 16 && height <= 16 {
+	if bounds.Dx() <= 16 && bounds.Dy() <= 16 {
 		return data, nil
 	}
 
@@ -243,15 +207,11 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90})
 	}
 
-	if err != nil {
+	if err != nil || buf.Len() >= len(data) {
 		return data, nil
 	}
 
-	if buf.Len() < len(data) {
-		return buf.Bytes(), nil
-	}
-
-	return data, nil
+	return buf.Bytes(), nil
 }
 
 func fetchFavicon(ctx context.Context, url string) FaviconResult {
@@ -297,15 +257,13 @@ func fetchFaviconsParallel(urlGroups [][]string, timeout time.Duration) *Favicon
 	defer cancel()
 
 	resultChan := make(chan FaviconResult, 10)
-
 	var wg sync.WaitGroup
 
-	for groupIdx, urls := range urlGroups {
+	for _, urls := range urlGroups {
 		for _, url := range urls {
 			wg.Add(1)
-			go func(u string, priority int) {
+			go func(u string) {
 				defer wg.Done()
-
 				result := fetchFavicon(ctx, u)
 				if result.Error == nil {
 					select {
@@ -313,7 +271,7 @@ func fetchFaviconsParallel(urlGroups [][]string, timeout time.Duration) *Favicon
 					case <-ctx.Done():
 					}
 				}
-			}(url, groupIdx)
+			}(url)
 		}
 	}
 
@@ -495,7 +453,7 @@ func main() {
 	var err error
 	repo, err = NewFaviconRepository("/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
-		log.Fatal("Failed to initialize database:", err)
+		log.Fatal(err)
 	}
 	defer repo.Close()
 
@@ -516,18 +474,13 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-
-	staticHandler := http.FileServer(http.FS(assets.Embeddedfiles))
-	mux.Handle("GET /static/", stripTrailingSlashMiddleware(staticHandler))
+	mux.Handle("GET /static/", stripTrailingSlashMiddleware(http.FileServer(http.FS(assets.Embeddedfiles))))
 	mux.HandleFunc("GET /robots.txt", handleRobotsTxt)
 	mux.HandleFunc("GET /favicon.ico", handleFavicon)
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("GET /", handleHome)
 
-	server := &http.Server{
-		Addr:    ":80",
-		Handler: mux,
-	}
+	server := &http.Server{Addr: ":80", Handler: mux}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -535,13 +488,12 @@ func main() {
 	go func() {
 		log.Println("Server is running at http://localhost")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("Server failed to start:", err)
+			log.Fatal(err)
 		}
 	}()
 
 	<-quit
 	log.Println("Shutting down server...")
-
 	cleanupCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -549,8 +501,5 @@ func main() {
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
-		return
 	}
-
-	log.Println("Server gracefully stopped")
 }
