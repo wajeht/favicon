@@ -461,7 +461,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	baseURL := "https://" + domain
 	faviconURLGroups := getFaviconURLs(baseURL, domain)
 
-	if result := fetchFaviconsParallel(faviconURLGroups, 180*time.Millisecond); result != nil {
+	if result := fetchFaviconsParallel(faviconURLGroups, 500*time.Millisecond); result != nil {
 		if err := repo.Save(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
