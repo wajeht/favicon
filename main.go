@@ -144,17 +144,17 @@ func saveFavicon(domain string, data []byte, contentType string) error {
 
 func extractDomain(rawURL string) string {
 	url := rawURL
-	if strings.HasPrefix(url, "http://") {
-		url = url[7:]
-	} else if strings.HasPrefix(url, "https://") {
+	if len(url) > 8 && url[:8] == "https://" {
 		url = url[8:]
+	} else if len(url) > 7 && url[:7] == "http://" {
+		url = url[7:]
 	}
 
-	if slashIndex := strings.Index(url, "/"); slashIndex != -1 {
+	if slashIndex := strings.IndexByte(url, '/'); slashIndex != -1 {
 		url = url[:slashIndex]
 	}
 
-	if colonIndex := strings.Index(url, ":"); colonIndex != -1 {
+	if colonIndex := strings.IndexByte(url, ':'); colonIndex != -1 {
 		url = url[:colonIndex]
 	}
 
