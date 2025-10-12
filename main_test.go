@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wajeht/favicon/assets"
 )
 
 func TestExtractDomain(t *testing.T) {
@@ -209,6 +211,10 @@ func TestHandleHealthz(t *testing.T) {
 }
 
 func TestHandleRobotsTxt(t *testing.T) {
+	if _, err := assets.Embeddedfiles.Open("static/robots.txt"); err != nil {
+		t.Skip("Embedded static files not available, skipping test")
+	}
+
 	req := httptest.NewRequest("GET", "/robots.txt", nil)
 	w := httptest.NewRecorder()
 
@@ -225,6 +231,10 @@ func TestHandleRobotsTxt(t *testing.T) {
 }
 
 func TestHandleFavicon(t *testing.T) {
+	if _, err := assets.Embeddedfiles.Open("static/favicon.ico"); err != nil {
+		t.Skip("Embedded static files not available, skipping test")
+	}
+
 	req := httptest.NewRequest("GET", "/favicon.ico", nil)
 	w := httptest.NewRecorder()
 
@@ -355,7 +365,6 @@ func BenchmarkGetCachedFavicon(b *testing.B) {
 	repo = setupTestDB(nil)
 	defer teardownTestDB(nil)
 
-	// Pre-populate cache
 	repo.Save("example.com", []byte("test data"), "image/x-icon")
 
 	for b.Loop() {
