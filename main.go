@@ -126,6 +126,23 @@ func (r *FaviconRepository) Save(domain string, data []byte, contentType string)
 	return err
 }
 
+func (r *FaviconRepository) List() (string, error) {
+	rows, err := r.db.Query(`SELECT json_group_array(json_object('domain', domain, 'content_type', content_type, 'expires_at', expires_at)) FROM favicons ORDER BY expires_at DESC`)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	var jsonResult string
+	if rows.Next() {
+		if err := rows.Scan(&jsonResult); err != nil {
+			return "", err
+		}
+	}
+
+	return jsonResult, nil
+}
+
 func (r *FaviconRepository) CleanupExpired() error {
 	result, err := r.db.Exec(`DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`)
 	if err != nil {
@@ -419,6 +436,23 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleCache(w http.ResponseWriter, r *http.Request) {
+	if err := repo.Ping(); err != nil {
+		http.Error(w, "Database connection failed", http.StatusServiceUnavailable)
+		return
+	}
+
+	jsonResult, err := repo.List()
+	if err != nil {
+		handleServerError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(jsonResult))
+}
+
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		handleNotFound(w, r)
@@ -507,7 +541,7 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var err error
-	repo, err = NewFaviconRepository("/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
+	repo, err = NewFaviconRepository("./data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -534,6 +568,7 @@ func main() {
 	mux.HandleFunc("GET /robots.txt", handleRobotsTxt)
 	mux.HandleFunc("GET /favicon.ico", handleFavicon)
 	mux.HandleFunc("GET /healthz", handleHealthz)
+	mux.HandleFunc("GET /cache", handleCache)
 	mux.HandleFunc("GET /", handleHome)
 
 	server := &http.Server{Addr: ":80", Handler: mux}
