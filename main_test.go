@@ -2,17 +2,12 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"image"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/pressly/goose/v3"
-	"github.com/wajeht/favicon/assets"
 )
 
 func TestExtractDomain(t *testing.T) {
@@ -92,13 +87,13 @@ func TestGetContentType(t *testing.T) {
 
 func TestGetFaviconURLs(t *testing.T) {
 	baseURL := "https://example.com"
-	urls := getFaviconURLs(baseURL)
+	domain := "example.com"
+	urls := getFaviconURLs(baseURL, domain)
 
 	if len(urls) == 0 {
 		t.Error("getFaviconURLs should return at least one group of URLs")
 	}
 
-	// Check that favicon.ico is in the first group
 	found := false
 	for _, url := range urls[0] {
 		if strings.Contains(url, "favicon.ico") {
@@ -112,7 +107,6 @@ func TestGetFaviconURLs(t *testing.T) {
 }
 
 func TestResizeImage(t *testing.T) {
-	// Create a simple 32x32 PNG image
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -128,7 +122,6 @@ func TestResizeImage(t *testing.T) {
 		t.Error("resizeImage returned empty data")
 	}
 
-	// Test with small image (should not resize)
 	smallImg := image.NewRGBA(image.Rect(0, 0, 16, 16))
 	var smallBuf bytes.Buffer
 	if err := png.Encode(&smallBuf, smallImg); err != nil {
@@ -145,70 +138,42 @@ func TestResizeImage(t *testing.T) {
 	}
 }
 
-func setupTestDB(t *testing.T) {
+var testRepo *FaviconRepository
+
+func setupTestDB(t *testing.T) *FaviconRepository {
 	var err error
-	db, err = sql.Open("sqlite3", ":memory:")
+	testRepo, err = NewFaviconRepository(":memory:")
 	if err != nil {
-		t.Fatal(err)
+		if t != nil {
+			t.Fatal(err)
+		}
+		panic(err)
 	}
-
-	goose.SetBaseFS(assets.Embeddedfiles)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := goose.Up(db, "migrations"); err != nil {
-		t.Fatal(err)
-	}
-
-	getFaviconStmt, err = db.Prepare(`
-		SELECT data, content_type
-		FROM favicons
-		WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP
-	`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	saveFaviconStmt, err = db.Prepare(`
-		INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at)
-		VALUES (?, ?, ?, datetime('now', '+24 hours'))
-	`)
-	if err != nil {
-		t.Fatal(err)
-	}
+	return testRepo
 }
 
 func teardownTestDB(t *testing.T) {
-	if getFaviconStmt != nil {
-		getFaviconStmt.Close()
-	}
-	if saveFaviconStmt != nil {
-		saveFaviconStmt.Close()
-	}
-	if db != nil {
-		db.Close()
+	if testRepo != nil {
+		testRepo.Close()
 	}
 }
 
 func TestFaviconCaching(t *testing.T) {
-	setupTestDB(t)
+	repo := setupTestDB(t)
 	defer teardownTestDB(t)
 
 	domain := "example.com"
 	data := []byte("test data")
 	contentType := "image/x-icon"
 
-	// Test saving
-	err := saveFavicon(domain, data, contentType)
+	err := repo.Save(domain, data, contentType)
 	if err != nil {
-		t.Errorf("saveFavicon failed: %v", err)
+		t.Errorf("Save failed: %v", err)
 	}
 
-	// Test retrieval
-	cachedData, cachedContentType, err := getCachedFavicon(domain)
+	cachedData, cachedContentType, err := repo.Get(domain)
 	if err != nil {
-		t.Errorf("getCachedFavicon failed: %v", err)
+		t.Errorf("Get failed: %v", err)
 	}
 
 	if !bytes.Equal(cachedData, data) {
@@ -219,15 +184,14 @@ func TestFaviconCaching(t *testing.T) {
 		t.Errorf("Cached content type = %q, want %q", cachedContentType, contentType)
 	}
 
-	// Test non-existent domain
-	_, _, err = getCachedFavicon("nonexistent.com")
+	_, _, err = repo.Get("nonexistent.com")
 	if err == nil {
 		t.Error("Expected error for non-existent domain")
 	}
 }
 
 func TestHandleHealthz(t *testing.T) {
-	setupTestDB(t)
+	repo = setupTestDB(t)
 	defer teardownTestDB(t)
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
@@ -277,7 +241,7 @@ func TestHandleFavicon(t *testing.T) {
 }
 
 func TestHandleHomeMissingURL(t *testing.T) {
-	setupTestDB(t)
+	repo = setupTestDB(t)
 	defer teardownTestDB(t)
 
 	req := httptest.NewRequest("GET", "/", nil)
@@ -291,14 +255,13 @@ func TestHandleHomeMissingURL(t *testing.T) {
 }
 
 func TestHandleHomeWithCachedFavicon(t *testing.T) {
-	setupTestDB(t)
+	repo = setupTestDB(t)
 	defer teardownTestDB(t)
 
-	// Pre-populate cache
 	domain := "example.com"
 	data := []byte("cached favicon data")
 	contentType := "image/x-icon"
-	saveFavicon(domain, data, contentType)
+	repo.Save(domain, data, contentType)
 
 	req := httptest.NewRequest("GET", "/?url=example.com", nil)
 	w := httptest.NewRecorder()
@@ -323,7 +286,6 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Test path without trailing slash (should pass through)
 	req := httptest.NewRequest("GET", "/test", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -332,7 +294,6 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 		t.Errorf("Expected status %d for path without trailing slash, got %d", http.StatusOK, w.Code)
 	}
 
-	// Test path with trailing slash (should return 404)
 	req = httptest.NewRequest("GET", "/test/", nil)
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -341,7 +302,6 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 		t.Errorf("Expected status %d for path with trailing slash, got %d", http.StatusNotFound, w.Code)
 	}
 
-	// Test /static/ (should pass through)
 	req = httptest.NewRequest("GET", "/static/", nil)
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -352,11 +312,10 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 }
 
 func TestCleanupExpiredFavicons(t *testing.T) {
-	setupTestDB(t)
+	repo = setupTestDB(t)
 	defer teardownTestDB(t)
 
-	// Insert an expired favicon
-	_, err := db.Exec(`
+	_, err := repo.db.Exec(`
 		INSERT INTO favicons (domain, data, content_type, expires_at)
 		VALUES (?, ?, ?, datetime('now', '-1 hour'))
 	`, "expired.com", []byte("data"), "image/x-icon")
@@ -364,26 +323,22 @@ func TestCleanupExpiredFavicons(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Insert a valid favicon
-	err = saveFavicon("valid.com", []byte("data"), "image/x-icon")
+	err = repo.Save("valid.com", []byte("data"), "image/x-icon")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Run cleanup
-	err = cleanupExpiredFavicons()
+	err = repo.CleanupExpired()
 	if err != nil {
-		t.Errorf("cleanupExpiredFavicons failed: %v", err)
+		t.Errorf("CleanupExpired failed: %v", err)
 	}
 
-	// Check that expired favicon is gone
-	_, _, err = getCachedFavicon("expired.com")
+	_, _, err = repo.Get("expired.com")
 	if err == nil {
 		t.Error("Expected expired favicon to be cleaned up")
 	}
 
-	// Check that valid favicon is still there
-	_, _, err = getCachedFavicon("valid.com")
+	_, _, err = repo.Get("valid.com")
 	if err != nil {
 		t.Error("Valid favicon should not be cleaned up")
 	}
@@ -391,20 +346,19 @@ func TestCleanupExpiredFavicons(t *testing.T) {
 
 func BenchmarkExtractDomain(b *testing.B) {
 	url := "https://www.example.com/path/to/page"
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		extractDomain(url)
 	}
 }
 
 func BenchmarkGetCachedFavicon(b *testing.B) {
-	setupTestDB(nil)
+	repo = setupTestDB(nil)
 	defer teardownTestDB(nil)
 
 	// Pre-populate cache
-	saveFavicon("example.com", []byte("test data"), "image/x-icon")
+	repo.Save("example.com", []byte("test data"), "image/x-icon")
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		getCachedFavicon("example.com")
+	for b.Loop() {
+		repo.Get("example.com")
 	}
 }
