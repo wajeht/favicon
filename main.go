@@ -449,6 +449,7 @@ func handleCache(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate") // cached for 5 minutes
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(jsonResult))
 }
