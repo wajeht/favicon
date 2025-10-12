@@ -388,6 +388,21 @@ func isImage(contentType string) bool {
 	}
 }
 
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/") && r.URL.Path != "/static/" {
@@ -404,6 +419,7 @@ func handleNotFound(w http.ResponseWriter, r *http.Request) {
 
 func handleServerError(w http.ResponseWriter, r *http.Request, err error) {
 	log.Println("Internal server error:", err)
+	http.Error(w, "Internal server error", http.StatusInternalServerError)
 }
 
 func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
@@ -486,6 +502,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
 		w.Header().Set("ETag", etag)
 		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("X-Favicon-Source", "cached")
 
 		_, err = w.Write(data)
 		if err != nil {
@@ -497,7 +514,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	baseURL := "https://" + domain
 	faviconURLGroups := getFaviconURLs(baseURL, domain)
 
-	if result := fetchFaviconsParallel(faviconURLGroups, 500*time.Millisecond); result != nil {
+	if result := fetchFaviconsParallel(faviconURLGroups, 1500*time.Millisecond); result != nil {
 		if err := repo.Save(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
@@ -505,6 +522,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", result.ContentType)
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("X-Cache", "MISS")
+		w.Header().Set("X-Favicon-Source", "fetched")
 
 		_, err := w.Write(result.Data)
 		if err != nil {
@@ -523,6 +541,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/x-icon")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("X-Cache", "DEFAULT")
+	w.Header().Set("X-Favicon-Source", "default")
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
@@ -535,8 +554,8 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
 	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
 
@@ -572,7 +591,7 @@ func main() {
 	mux.HandleFunc("GET /cache", handleCache)
 	mux.HandleFunc("GET /", handleHome)
 
-	server := &http.Server{Addr: ":80", Handler: mux}
+	server := &http.Server{Addr: ":80", Handler: corsMiddleware(mux)}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
