@@ -31,3 +31,8 @@ test:
 format:
 	@go mod tidy -v
 	@go fmt ./...
+
+fix_git:
+	@git rm -r --cached .
+	@git add .
+	@git commit -m "Untrack files in .gitignore"
