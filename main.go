@@ -66,15 +66,6 @@ type Manifest struct {
 }
 
 func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
-	if strings.Contains(dbPath, "/") {
-		dirPath := dbPath[:strings.LastIndex(dbPath, "/")]
-		if dirPath != "" {
-			if err := os.MkdirAll(dirPath, 0755); err != nil {
-				return nil, fmt.Errorf("failed to create database directory: %w", err)
-			}
-		}
-	}
-
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, err
@@ -551,7 +542,7 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var err error
-	repo, err = NewFaviconRepository("./data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
+	repo, err = NewFaviconRepository("/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
 		log.Fatal(err)
 	}
