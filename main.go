@@ -208,6 +208,70 @@ func getManifestIcons(baseURL string) []string {
 	return icons
 }
 
+func getHTMLIconLinks(baseURL string) []string {
+	resp, err := httpClient.Get(baseURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // Read up to 512KB
+	if err != nil {
+		return nil
+	}
+
+	html := string(body)
+	var icons []string
+
+	// Find all <link rel="icon" href="..."> and similar tags
+	start := 0
+	for {
+		idx := strings.Index(html[start:], "<link")
+		if idx == -1 {
+			break
+		}
+		start += idx
+		end := strings.Index(html[start:], ">")
+		if end == -1 {
+			break
+		}
+		tag := html[start : start+end+1]
+
+		// Check if it's an icon link
+		if (strings.Contains(tag, `rel="icon"`) || strings.Contains(tag, `rel='icon'`) ||
+			strings.Contains(tag, `rel="shortcut icon"`) || strings.Contains(tag, `rel='shortcut icon'`)) {
+			// Extract href
+			hrefIdx := strings.Index(tag, "href=")
+			if hrefIdx != -1 {
+				hrefStart := hrefIdx + 5
+				if hrefStart < len(tag) {
+					quote := tag[hrefStart]
+					if quote == '"' || quote == '\'' {
+						hrefStart++
+						hrefEnd := strings.IndexByte(tag[hrefStart:], quote)
+						if hrefEnd != -1 {
+							iconURL := tag[hrefStart : hrefStart+hrefEnd]
+							if strings.HasPrefix(iconURL, "./") {
+								iconURL = strings.TrimPrefix(iconURL, ".")
+							}
+							if strings.HasPrefix(iconURL, "/") {
+								icons = append(icons, baseURL+iconURL)
+							} else if strings.HasPrefix(iconURL, "http://") || strings.HasPrefix(iconURL, "https://") {
+								icons = append(icons, iconURL)
+							} else {
+								icons = append(icons, baseURL+"/"+iconURL)
+							}
+						}
+					}
+				}
+			}
+		}
+		start += end + 1
+	}
+
+	return icons
+}
+
 func getFaviconURLs(baseURL, domain string) [][]string {
 	groups := [][]string{
 		{
@@ -230,6 +294,10 @@ func getFaviconURLs(baseURL, domain string) [][]string {
 
 	if manifestIcons := getManifestIcons(baseURL); len(manifestIcons) > 0 {
 		groups = append(groups, manifestIcons)
+	}
+
+	if htmlIcons := getHTMLIconLinks(baseURL); len(htmlIcons) > 0 {
+		groups = append(groups, htmlIcons)
 	}
 
 	return groups

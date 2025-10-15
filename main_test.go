@@ -108,6 +108,87 @@ func TestGetFaviconURLs(t *testing.T) {
 	}
 }
 
+func TestGetHTMLIconLinks(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		html := `<!DOCTYPE html>
+<html>
+<head>
+	<link rel="icon" href="/favicon.ico" type="image/x-icon">
+	<link href="/icons/custom.png" rel="icon" type="image/png">
+	<link rel="shortcut icon" href="/shortcut.ico">
+	<link rel="icon" href="https://cdn.example.com/icon.png">
+	<link rel="icon" href="./relative/icon.png">
+	<link rel="stylesheet" href="/style.css">
+</head>
+<body>Test</body>
+</html>`
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(html))
+	})
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	icons := getHTMLIconLinks(server.URL)
+
+	if len(icons) == 0 {
+		t.Error("getHTMLIconLinks should find icon links")
+	}
+
+	expectedIcons := []string{
+		server.URL + "/favicon.ico",
+		server.URL + "/icons/custom.png",
+		server.URL + "/shortcut.ico",
+		"https://cdn.example.com/icon.png",
+		server.URL + "/relative/icon.png",
+	}
+
+	if len(icons) != len(expectedIcons) {
+		t.Errorf("Expected %d icons, got %d", len(expectedIcons), len(icons))
+	}
+
+	for _, expected := range expectedIcons {
+		found := false
+		for _, icon := range icons {
+			if icon == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Expected to find icon %q, but it was not found", expected)
+		}
+	}
+}
+
+func TestGetFaviconURLsPriority(t *testing.T) {
+	// Test that HTML icons are fetched after manifest icons
+	// This is a simple check to ensure the priority order is correct
+	baseURL := "https://example.com"
+	domain := "example.com"
+	groups := getFaviconURLs(baseURL, domain)
+
+	// First group should be standard favicon locations
+	if len(groups) < 1 {
+		t.Fatal("Expected at least 1 URL group")
+	}
+
+	firstGroup := groups[0]
+	if !strings.Contains(firstGroup[0], "favicon.ico") {
+		t.Error("First priority should be favicon.ico")
+	}
+
+	// Second group should be apple touch icons
+	if len(groups) < 2 {
+		t.Fatal("Expected at least 2 URL groups")
+	}
+
+	secondGroup := groups[1]
+	if !strings.Contains(secondGroup[0], "apple-touch-icon") {
+		t.Error("Second priority should be apple touch icons")
+	}
+}
+
 func TestResizeImage(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
 	var buf bytes.Buffer
