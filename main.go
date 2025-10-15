@@ -92,8 +92,16 @@ type FaviconRepository struct {
 func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
 	path := strings.Split(dbPath, "?")[0]
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create database directory: %w", err)
+
+	dbExists := false
+	if _, err := os.Stat(path); err == nil {
+		dbExists = true
+	}
+
+	if !dbExists {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create database directory: %w", err)
+		}
 	}
 
 	db, err := sql.Open("sqlite3", dbPath)
