@@ -321,39 +321,6 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 	}
 }
 
-func TestCleanupExpiredFavicons(t *testing.T) {
-	repo = setupTestDB(t)
-	defer teardownTestDB(t)
-
-	_, err := repo.db.Exec(`
-		INSERT INTO favicons (domain, data, content_type, expires_at)
-		VALUES (?, ?, ?, datetime('now', '-1 hour'))
-	`, "expired.com", []byte("data"), "image/x-icon")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = repo.Save("valid.com", []byte("data"), "image/x-icon")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = repo.CleanupExpired()
-	if err != nil {
-		t.Errorf("CleanupExpired failed: %v", err)
-	}
-
-	_, _, err = repo.Get("expired.com")
-	if err == nil {
-		t.Error("Expected expired favicon to be cleaned up")
-	}
-
-	_, _, err = repo.Get("valid.com")
-	if err != nil {
-		t.Error("Valid favicon should not be cleaned up")
-	}
-}
-
 func BenchmarkExtractDomain(b *testing.B) {
 	url := "https://www.example.com/path/to/page"
 	for b.Loop() {

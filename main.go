@@ -104,17 +104,13 @@ func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
 
 	repo := &FaviconRepository{db: db}
 
-	if err := repo.CleanupExpired(); err != nil {
-		log.Printf("Warning: Failed to cleanup expired favicons: %v", err)
-	}
-
 	return repo, nil
 }
 
 func (r *FaviconRepository) Get(domain string) ([]byte, string, error) {
 	var data []byte
 	var contentType string
-	err := r.db.QueryRow(`SELECT data, content_type FROM favicons WHERE domain = ? AND expires_at > CURRENT_TIMESTAMP`, domain).Scan(&data, &contentType)
+	err := r.db.QueryRow(`SELECT data, content_type FROM favicons WHERE domain = ?`, domain).Scan(&data, &contentType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -122,12 +118,12 @@ func (r *FaviconRepository) Get(domain string) ([]byte, string, error) {
 }
 
 func (r *FaviconRepository) Save(domain string, data []byte, contentType string) error {
-	_, err := r.db.Exec(`INSERT OR REPLACE INTO favicons (domain, data, content_type, expires_at) VALUES (?, ?, ?, datetime('now', '+24 hours'))`, domain, data, contentType)
+	_, err := r.db.Exec(`INSERT OR REPLACE INTO favicons (domain, data, content_type) VALUES (?, ?, ?)`, domain, data, contentType)
 	return err
 }
 
 func (r *FaviconRepository) List() (string, error) {
-	rows, err := r.db.Query(`SELECT json_group_array(json_object('domain', domain, 'content_type', content_type, 'expires_at', expires_at)) FROM favicons ORDER BY expires_at DESC`)
+	rows, err := r.db.Query(`SELECT json_group_array(json_object('domain', domain, 'content_type', content_type, 'created_at', created_at)) FROM favicons ORDER BY created_at DESC`)
 	if err != nil {
 		return "", err
 	}
@@ -141,17 +137,6 @@ func (r *FaviconRepository) List() (string, error) {
 	}
 
 	return jsonResult, nil
-}
-
-func (r *FaviconRepository) CleanupExpired() error {
-	result, err := r.db.Exec(`DELETE FROM favicons WHERE expires_at <= CURRENT_TIMESTAMP`)
-	if err != nil {
-		return err
-	}
-	if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
-		log.Printf("Cleaned up %d expired favicon entries", rowsAffected)
-	}
-	return nil
 }
 
 func (r *FaviconRepository) Ping() error {
@@ -452,7 +437,7 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleCache(w http.ResponseWriter, r *http.Request) {
+func handleDomains(w http.ResponseWriter, r *http.Request) {
 	if err := repo.Ping(); err != nil {
 		http.Error(w, "Database connection failed", http.StatusServiceUnavailable)
 		return
@@ -567,28 +552,12 @@ func main() {
 	}
 	defer repo.Close()
 
-	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(6 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := repo.CleanupExpired(); err != nil {
-					log.Printf("Periodic cleanup failed: %v", err)
-				}
-			case <-cleanupCtx.Done():
-				return
-			}
-		}
-	}()
-
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", stripTrailingSlashMiddleware(http.FileServer(http.FS(assets.Embeddedfiles))))
 	mux.HandleFunc("GET /robots.txt", handleRobotsTxt)
 	mux.HandleFunc("GET /favicon.ico", handleFavicon)
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("GET /cache", handleCache)
+	mux.HandleFunc("GET /domains", handleDomains)
 	mux.HandleFunc("GET /", handleHome)
 
 	server := &http.Server{Addr: ":80", Handler: corsMiddleware(mux)}
@@ -605,7 +574,6 @@ func main() {
 
 	<-quit
 	log.Println("Shutting down server...")
-	cleanupCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
