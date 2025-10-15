@@ -553,7 +553,7 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	var err error
-	repo, err = NewFaviconRepository("/data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
+	repo, err = NewFaviconRepository("./data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
 		log.Fatal(err)
 	}
