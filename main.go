@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -66,6 +67,12 @@ type Manifest struct {
 }
 
 func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
+	path := strings.Split(dbPath, "?")[0]
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, err
