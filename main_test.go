@@ -37,7 +37,7 @@ func TestExtractDomain(t *testing.T) {
 	}
 }
 
-func TestIsImage(t *testing.T) {
+func TestIsValidImageType(t *testing.T) {
 	tests := []struct {
 		contentType string
 		expected    bool
@@ -57,15 +57,15 @@ func TestIsImage(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.contentType, func(t *testing.T) {
-			result := isImage(test.contentType)
+			result := isValidImageType(test.contentType)
 			if result != test.expected {
-				t.Errorf("isImage(%q) = %t, want %t", test.contentType, result, test.expected)
+				t.Errorf("isValidImageType(%q) = %t, want %t", test.contentType, result, test.expected)
 			}
 		})
 	}
 }
 
-func TestGetContentType(t *testing.T) {
+func TestInferContentType(t *testing.T) {
 	tests := []struct {
 		url             string
 		respContentType string
@@ -79,9 +79,9 @@ func TestGetContentType(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.url, func(t *testing.T) {
-			result := getContentType(test.url, test.respContentType)
+			result := inferContentType(test.url, test.respContentType)
 			if result != test.expected {
-				t.Errorf("getContentType(%q, %q) = %q, want %q", test.url, test.respContentType, result, test.expected)
+				t.Errorf("inferContentType(%q, %q) = %q, want %q", test.url, test.respContentType, result, test.expected)
 			}
 		})
 	}
@@ -118,7 +118,13 @@ func TestGetHTMLIconLinks(t *testing.T) {
 	<link rel="shortcut icon" href="/shortcut.ico">
 	<link rel="icon" href="https://cdn.example.com/icon.png">
 	<link rel="icon" href="./relative/icon.png">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+	<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180x180.png">
+	<link rel="APPLE-TOUCH-ICON" href="/apple-touch-icon-uppercase.png">
 	<link rel="stylesheet" href="/style.css">
+	<link rel="preload" href="/icon-font.woff" as="font">
+	<link rel="dns-prefetch" href="//example.com">
+	<link href="https://fonts.googleapis.com/css?family=Noto+Sans:400,700&subset=latin,cyrillic-ext,latin-ext,cyrillic" rel="stylesheet" type="text/css">
 </head>
 <body>Test</body>
 </html>`
@@ -141,10 +147,20 @@ func TestGetHTMLIconLinks(t *testing.T) {
 		server.URL + "/shortcut.ico",
 		"https://cdn.example.com/icon.png",
 		server.URL + "/relative/icon.png",
+		server.URL + "/apple-touch-icon.png",
+		server.URL + "/apple-touch-icon-180x180.png",
+		server.URL + "/apple-touch-icon-uppercase.png",
+	}
+
+	unexpectedLinks := []string{
+		"/style.css",
+		"/icon-font.woff",
+		"//example.com",
+		"fonts.googleapis.com",
 	}
 
 	if len(icons) != len(expectedIcons) {
-		t.Errorf("Expected %d icons, got %d", len(expectedIcons), len(icons))
+		t.Errorf("Expected %d icons, got %d. Icons found: %v", len(expectedIcons), len(icons), icons)
 	}
 
 	for _, expected := range expectedIcons {
@@ -158,6 +174,103 @@ func TestGetHTMLIconLinks(t *testing.T) {
 		if !found {
 			t.Errorf("Expected to find icon %q, but it was not found", expected)
 		}
+	}
+
+	// Ensure non-icon links are not included
+	for _, unexpected := range unexpectedLinks {
+		for _, icon := range icons {
+			if strings.Contains(icon, unexpected) {
+				t.Errorf("Found unexpected non-icon link containing %q: %q", unexpected, icon)
+			}
+		}
+	}
+}
+
+func TestIsIconLink(t *testing.T) {
+	tests := []struct {
+		name     string
+		tag      string
+		expected bool
+	}{
+		{
+			name:     "standard icon",
+			tag:      `<link rel="icon" href="/favicon.ico">`,
+			expected: true,
+		},
+		{
+			name:     "shortcut icon",
+			tag:      `<link rel="shortcut icon" href="/favicon.ico">`,
+			expected: true,
+		},
+		{
+			name:     "apple-touch-icon",
+			tag:      `<link rel="apple-touch-icon" href="/apple-icon.png">`,
+			expected: true,
+		},
+		{
+			name:     "apple-touch-icon with sizes",
+			tag:      `<link rel="apple-touch-icon" sizes="180x180" href="/icon.png">`,
+			expected: true,
+		},
+		{
+			name:     "uppercase apple-touch-icon",
+			tag:      `<link rel="APPLE-TOUCH-ICON" href="/icon.png">`,
+			expected: true,
+		},
+		{
+			name:     "single quotes",
+			tag:      `<link rel='icon' href='/favicon.ico'>`,
+			expected: true,
+		},
+		{
+			name:     "stylesheet should not match",
+			tag:      `<link rel="stylesheet" href="/style.css">`,
+			expected: false,
+		},
+		{
+			name:     "preload should not match",
+			tag:      `<link rel="preload" href="/font.woff" as="font">`,
+			expected: false,
+		},
+		{
+			name:     "dns-prefetch should not match",
+			tag:      `<link rel="dns-prefetch" href="//example.com">`,
+			expected: false,
+		},
+		{
+			name:     "preconnect should not match",
+			tag:      `<link rel="preconnect" href="https://fonts.gstatic.com">`,
+			expected: false,
+		},
+		{
+			name:     "modulepreload should not match",
+			tag:      `<link rel="modulepreload" href="/module.js">`,
+			expected: false,
+		},
+		{
+			name:     "mask-icon",
+			tag:      `<link rel="mask-icon" href="/safari-pinned-tab.svg" color="#5bbad5">`,
+			expected: true,
+		},
+		{
+			name:     "icon with extra spaces",
+			tag:      `<link rel="  icon  " href="/favicon.ico">`,
+			expected: true,
+		},
+		{
+			name:     "no rel attribute",
+			tag:      `<link href="/style.css">`,
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := isIconLink(test.tag)
+			if result != test.expected {
+				t.Errorf("isIconLink(%q) = %t, want %t", test.tag, result, test.expected)
+			}
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -27,24 +28,44 @@ import (
 	"golang.org/x/image/draw"
 )
 
+const (
+	httpTimeout           = 1 * time.Second
+	maxIdleConns          = 200
+	maxIdleConnsPerHost   = 30
+	maxConnsPerHost       = 50
+	idleConnTimeout       = 60 * time.Second
+	writeBufferSize       = 64 * 1024
+	readBufferSize        = 64 * 1024
+	tlsHandshakeTimeout   = 500 * time.Millisecond
+	responseHeaderTimeout = 500 * time.Millisecond
+	expectContinueTimeout = 200 * time.Millisecond
+
+	faviconFetchTimeout = 1500 * time.Millisecond
+	maxHTMLReadSize     = 512 * 1024  // 512KB
+	maxImageSize        = 1024 * 1024 // 1MB
+
+	targetIconSize = 16
+	jpegQuality    = 90
+
+	maxOpenConns    = 100
+	maxIdleDBConns  = 25
+	connMaxLifetime = 5 * time.Minute
+
+	cacheTTL     = 86400 // 1 day in seconds
+	listCacheTTL = 300   // 5 minutes in seconds
+
+	serverAddr      = ":80"
+	shutdownTimeout = 30 * time.Second
+
+	userAgent = "FaviconBot/1.0"
+)
+
 var (
-	repo       *FaviconRepository
-	httpClient = &http.Client{
-		Timeout: 1 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:          200,
-			MaxIdleConnsPerHost:   30,
-			MaxConnsPerHost:       50,
-			IdleConnTimeout:       60 * time.Second,
-			DisableKeepAlives:     false,
-			WriteBufferSize:       64 * 1024,
-			ReadBufferSize:        64 * 1024,
-			TLSHandshakeTimeout:   500 * time.Millisecond,
-			ResponseHeaderTimeout: 500 * time.Millisecond,
-			ExpectContinueTimeout: 200 * time.Millisecond,
-			ForceAttemptHTTP2:     true,
-		},
-	}
+	ErrNotFound = errors.New("favicon not found")
+
+	repo *FaviconRepository
+
+	httpClient = newHTTPClient()
 )
 
 type FaviconResult struct {
@@ -54,92 +75,102 @@ type FaviconResult struct {
 	Error       error
 }
 
-type FaviconRepository struct {
-	db *sql.DB
+type Manifest struct {
+	Icons []ManifestIcon `json:"icons"`
 }
 
-type Manifest struct {
-	Icons []struct {
-		Src   string `json:"src"`
-		Sizes string `json:"sizes"`
-		Type  string `json:"type"`
-	} `json:"icons"`
+type ManifestIcon struct {
+	Src   string `json:"src"`
+	Sizes string `json:"sizes"`
+	Type  string `json:"type"`
+}
+
+type FaviconRepository struct {
+	db *sql.DB
 }
 
 func NewFaviconRepository(dbPath string) (*FaviconRepository, error) {
 	path := strings.Split(dbPath, "?")[0]
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(100)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleDBConns)
+	db.SetConnMaxLifetime(connMaxLifetime)
 
 	if err := db.Ping(); err != nil {
-		return nil, err
+		db.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL;",
-		"PRAGMA synchronous=NORMAL;",
-		"PRAGMA cache_size=10000;",
-		"PRAGMA temp_store=MEMORY;",
-		"PRAGMA mmap_size=268435456;",
+	if err := applyPragmas(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to apply pragmas: %w", err)
 	}
 
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			log.Printf("Warning: Failed to set pragma %s: %v", pragma, err)
-		}
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	goose.SetBaseFS(assets.Embeddedfiles)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return nil, err
-	}
-
-	if err := goose.Up(db, "migrations"); err != nil {
-		return nil, err
-	}
-
-	repo := &FaviconRepository{db: db}
-
-	return repo, nil
+	return &FaviconRepository{db: db}, nil
 }
 
 func (r *FaviconRepository) Get(domain string) ([]byte, string, error) {
 	var data []byte
 	var contentType string
-	err := r.db.QueryRow(`SELECT data, content_type FROM favicons WHERE domain = ?`, domain).Scan(&data, &contentType)
+
+	query := `SELECT data, content_type FROM favicons WHERE domain = ?`
+	err := r.db.QueryRow(query, domain).Scan(&data, &contentType)
 	if err != nil {
-		return nil, "", err
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", ErrNotFound
+		}
+		return nil, "", fmt.Errorf("failed to get favicon: %w", err)
 	}
+
 	return data, contentType, nil
 }
 
 func (r *FaviconRepository) Save(domain string, data []byte, contentType string) error {
-	_, err := r.db.Exec(`INSERT OR REPLACE INTO favicons (domain, data, content_type) VALUES (?, ?, ?)`, domain, data, contentType)
-	return err
+	query := `INSERT OR REPLACE INTO favicons (domain, data, content_type) VALUES (?, ?, ?)`
+	_, err := r.db.Exec(query, domain, data, contentType)
+	if err != nil {
+		return fmt.Errorf("failed to save favicon: %w", err)
+	}
+	return nil
 }
 
 func (r *FaviconRepository) List() (string, error) {
-	rows, err := r.db.Query(`SELECT json_group_array(json_object('domain', domain, 'content_type', content_type, 'created_at', created_at)) FROM favicons ORDER BY created_at DESC`)
+	query := `
+		SELECT json_group_array(
+			json_object(
+				'domain', domain,
+				'content_type', content_type,
+				'created_at', created_at
+			)
+		)
+		FROM favicons
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.Query(query)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list favicons: %w", err)
 	}
 	defer rows.Close()
 
 	var jsonResult string
 	if rows.Next() {
 		if err := rows.Scan(&jsonResult); err != nil {
-			return "", err
+			return "", fmt.Errorf("failed to scan result: %w", err)
 		}
 	}
 
@@ -154,122 +185,91 @@ func (r *FaviconRepository) Close() error {
 	return r.db.Close()
 }
 
+func applyPragmas(db *sql.DB) error {
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA cache_size=10000",
+		"PRAGMA temp_store=MEMORY",
+		"PRAGMA mmap_size=268435456",
+	}
+
+	for _, pragma := range pragmas {
+		if _, err := db.Exec(pragma); err != nil {
+			log.Printf("Warning: Failed to set pragma %s: %v", pragma, err)
+		}
+	}
+
+	return nil
+}
+
+func runMigrations(db *sql.DB) error {
+	goose.SetBaseFS(assets.Embeddedfiles)
+
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(db, "migrations"); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
+	return nil
+}
+
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: httpTimeout,
+		Transport: &http.Transport{
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+			MaxConnsPerHost:       maxConnsPerHost,
+			IdleConnTimeout:       idleConnTimeout,
+			DisableKeepAlives:     false,
+			WriteBufferSize:       writeBufferSize,
+			ReadBufferSize:        readBufferSize,
+			TLSHandshakeTimeout:   tlsHandshakeTimeout,
+			ResponseHeaderTimeout: responseHeaderTimeout,
+			ExpectContinueTimeout: expectContinueTimeout,
+			ForceAttemptHTTP2:     true,
+		},
+	}
+}
+
 func extractDomain(rawURL string) string {
-	url := rawURL
-	if len(url) > 8 && url[:8] == "https://" {
-		url = url[8:]
-	} else if len(url) > 7 && url[:7] == "http://" {
-		url = url[7:]
+	u := rawURL
+	u = strings.TrimPrefix(u, "https://")
+	u = strings.TrimPrefix(u, "http://")
+
+	if idx := strings.IndexByte(u, '/'); idx != -1 {
+		u = u[:idx]
 	}
 
-	if slashIndex := strings.IndexByte(url, '/'); slashIndex != -1 {
-		url = url[:slashIndex]
+	if idx := strings.IndexByte(u, ':'); idx != -1 {
+		u = u[:idx]
 	}
 
-	if colonIndex := strings.IndexByte(url, ':'); colonIndex != -1 {
-		url = url[:colonIndex]
-	}
-
-	if url == "" {
+	if u == "" {
 		return rawURL
 	}
-	return strings.ToLower(url)
+
+	return strings.ToLower(u)
 }
 
-func getManifestIcons(baseURL string) []string {
-	resp, err := httpClient.Get(baseURL + "/manifest.json")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	var manifest Manifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
-		return nil
+func normalizeIconURL(baseURL, iconURL string) string {
+	if strings.HasPrefix(iconURL, "./") {
+		iconURL = strings.TrimPrefix(iconURL, ".")
 	}
 
-	var icons []string
-	for _, icon := range manifest.Icons {
-		iconURL := icon.Src
-		if strings.HasPrefix(iconURL, "./") {
-			iconURL = strings.TrimPrefix(iconURL, ".")
-		}
-		if strings.HasPrefix(iconURL, "/") {
-			icons = append(icons, baseURL+iconURL)
-		} else {
-			parsed, err := url.Parse(iconURL)
-			if err == nil && parsed.IsAbs() {
-				icons = append(icons, iconURL)
-			} else {
-				icons = append(icons, baseURL+"/"+iconURL)
-			}
-		}
-	}
-	return icons
-}
-
-func getHTMLIconLinks(baseURL string) []string {
-	resp, err := httpClient.Get(baseURL)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return nil
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // Read up to 512KB
-	if err != nil {
-		return nil
+	if strings.HasPrefix(iconURL, "http://") || strings.HasPrefix(iconURL, "https://") {
+		return iconURL
 	}
 
-	html := string(body)
-	var icons []string
-
-	// Find all <link rel="icon" href="..."> and similar tags
-	start := 0
-	for {
-		idx := strings.Index(html[start:], "<link")
-		if idx == -1 {
-			break
-		}
-		start += idx
-		end := strings.Index(html[start:], ">")
-		if end == -1 {
-			break
-		}
-		tag := html[start : start+end+1]
-
-		// Check if it's an icon link
-		if strings.Contains(tag, `rel="icon"`) || strings.Contains(tag, `rel='icon'`) ||
-			strings.Contains(tag, `rel="shortcut icon"`) || strings.Contains(tag, `rel='shortcut icon'`) {
-			// Extract href
-			hrefIdx := strings.Index(tag, "href=")
-			if hrefIdx != -1 {
-				hrefStart := hrefIdx + 5
-				if hrefStart < len(tag) {
-					quote := tag[hrefStart]
-					if quote == '"' || quote == '\'' {
-						hrefStart++
-						hrefEnd := strings.IndexByte(tag[hrefStart:], quote)
-						if hrefEnd != -1 {
-							iconURL := tag[hrefStart : hrefStart+hrefEnd]
-							if strings.HasPrefix(iconURL, "./") {
-								iconURL = strings.TrimPrefix(iconURL, ".")
-							}
-							if strings.HasPrefix(iconURL, "/") {
-								icons = append(icons, baseURL+iconURL)
-							} else if strings.HasPrefix(iconURL, "http://") || strings.HasPrefix(iconURL, "https://") {
-								icons = append(icons, iconURL)
-							} else {
-								icons = append(icons, baseURL+"/"+iconURL)
-							}
-						}
-					}
-				}
-			}
-		}
-		start += end + 1
+	if strings.HasPrefix(iconURL, "/") {
+		return baseURL + iconURL
 	}
 
-	return icons
+	return baseURL + "/" + iconURL
 }
 
 func getFaviconURLs(baseURL, domain string) [][]string {
@@ -303,6 +303,131 @@ func getFaviconURLs(baseURL, domain string) [][]string {
 	return groups
 }
 
+func getManifestIcons(baseURL string) []string {
+	resp, err := httpClient.Get(baseURL + "/manifest.json")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var manifest Manifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return nil
+	}
+
+	icons := make([]string, 0, len(manifest.Icons))
+	for _, icon := range manifest.Icons {
+		iconURL := icon.Src
+
+		parsed, err := url.Parse(iconURL)
+		if err == nil && parsed.IsAbs() {
+			icons = append(icons, iconURL)
+			continue
+		}
+
+		icons = append(icons, normalizeIconURL(baseURL, iconURL))
+	}
+
+	return icons
+}
+
+func getHTMLIconLinks(baseURL string) []string {
+	resp, err := httpClient.Get(baseURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTMLReadSize))
+	if err != nil {
+		return nil
+	}
+
+	return parseIconLinks(string(body), baseURL)
+}
+
+func parseIconLinks(html, baseURL string) []string {
+	var icons []string
+	offset := 0
+
+	for {
+		idx := strings.Index(html[offset:], "<link")
+		if idx == -1 {
+			break
+		}
+		offset += idx
+
+		end := strings.Index(html[offset:], ">")
+		if end == -1 {
+			break
+		}
+
+		tag := html[offset : offset+end+1]
+
+		if isIconLink(tag) {
+			if href := extractHrefAttribute(tag); href != "" {
+				icons = append(icons, normalizeIconURL(baseURL, href))
+			}
+		}
+
+		offset += end + 1
+	}
+
+	return icons
+}
+
+func isIconLink(tag string) bool {
+	rel := extractAttribute(tag, "rel")
+	if rel == "" {
+		return false
+	}
+
+	rel = strings.ToLower(strings.TrimSpace(rel))
+
+	if !strings.Contains(rel, "icon") {
+		return false
+	}
+
+	excludedRels := []string{"preload", "modulepreload", "dns-prefetch", "preconnect", "prefetch"}
+	for _, excluded := range excludedRels {
+		if strings.Contains(rel, excluded) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func extractHrefAttribute(tag string) string {
+	return extractAttribute(tag, "href")
+}
+
+func extractAttribute(tag, attrName string) string {
+	attrPrefix := attrName + "="
+	idx := strings.Index(tag, attrPrefix)
+	if idx == -1 {
+		return ""
+	}
+
+	start := idx + len(attrPrefix)
+	if start >= len(tag) {
+		return ""
+	}
+
+	quote := tag[start]
+	if quote != '"' && quote != '\'' {
+		return ""
+	}
+
+	start++
+	end := strings.IndexByte(tag[start:], quote)
+	if end == -1 {
+		return ""
+	}
+
+	return tag[start : start+end]
+}
+
 func resizeImage(data []byte, contentType string) ([]byte, error) {
 	var img image.Image
 	var err error
@@ -310,7 +435,7 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 	switch {
 	case strings.Contains(contentType, "png"):
 		img, err = png.Decode(bytes.NewReader(data))
-	case strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg"):
+	case strings.Contains(contentType, "jpeg"), strings.Contains(contentType, "jpg"):
 		img, err = jpeg.Decode(bytes.NewReader(data))
 	default:
 		return data, nil
@@ -321,18 +446,18 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 	}
 
 	bounds := img.Bounds()
-	if bounds.Dx() <= 16 && bounds.Dy() <= 16 {
+	if bounds.Dx() <= targetIconSize && bounds.Dy() <= targetIconSize {
 		return data, nil
 	}
 
-	dst := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	dst := image.NewRGBA(image.Rect(0, 0, targetIconSize, targetIconSize))
 	draw.NearestNeighbor.Scale(dst, dst.Bounds(), img, bounds, draw.Over, nil)
 
 	var buf bytes.Buffer
 	if strings.Contains(contentType, "png") {
 		err = png.Encode(&buf, dst)
 	} else {
-		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90})
+		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: jpegQuality})
 	}
 
 	if err != nil || buf.Len() >= len(data) {
@@ -342,41 +467,47 @@ func resizeImage(data []byte, contentType string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func fetchFavicon(ctx context.Context, url string) FaviconResult {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func fetchFavicon(ctx context.Context, targetURL string) FaviconResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
-		return FaviconResult{Error: err, URL: url}
+		return FaviconResult{Error: err, URL: targetURL}
 	}
 
-	req.Header.Set("User-Agent", "FaviconBot/1.0")
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "image/*")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return FaviconResult{Error: err, URL: url}
+		return FaviconResult{Error: err, URL: targetURL}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return FaviconResult{Error: fmt.Errorf("status %d", resp.StatusCode), URL: url}
+		return FaviconResult{
+			Error: fmt.Errorf("HTTP %d", resp.StatusCode),
+			URL:   targetURL,
+		}
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	if !isImage(contentType) {
-		return FaviconResult{Error: fmt.Errorf("not an image"), URL: url}
+	if !isValidImageType(contentType) {
+		return FaviconResult{
+			Error: fmt.Errorf("invalid content type: %s", contentType),
+			URL:   targetURL,
+		}
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageSize))
 	if err != nil {
-		return FaviconResult{Error: err, URL: url}
+		return FaviconResult{Error: err, URL: targetURL}
 	}
 
 	optimizedData, _ := resizeImage(data, contentType)
 
 	return FaviconResult{
 		Data:        optimizedData,
-		ContentType: getContentType(url, contentType),
-		URL:         url,
+		ContentType: inferContentType(targetURL, contentType),
+		URL:         targetURL,
 	}
 }
 
@@ -388,18 +519,18 @@ func fetchFaviconsParallel(urlGroups [][]string, timeout time.Duration) *Favicon
 	var wg sync.WaitGroup
 
 	for _, urls := range urlGroups {
-		for _, url := range urls {
+		for _, u := range urls {
 			wg.Add(1)
-			go func(u string) {
+			go func(targetURL string) {
 				defer wg.Done()
-				result := fetchFavicon(ctx, u)
+				result := fetchFavicon(ctx, targetURL)
 				if result.Error == nil {
 					select {
 					case resultChan <- result:
 					case <-ctx.Done():
 					}
 				}
-			}(url)
+			}(u)
 		}
 	}
 
@@ -418,34 +549,33 @@ func fetchFaviconsParallel(urlGroups [][]string, timeout time.Duration) *Favicon
 	return nil
 }
 
-func getContentType(url string, respContentType string) string {
-	if respContentType != "" {
-		return respContentType
-	}
-
-	if strings.HasSuffix(url, ".png") {
-		return "image/png"
-	}
-
-	return "image/x-icon"
-}
-
-func isImage(contentType string) bool {
+func isValidImageType(contentType string) bool {
 	if contentType == "" {
 		return false
 	}
 
 	contentType = strings.ToLower(strings.Split(contentType, ";")[0])
+
 	switch contentType {
-	case "image/x-icon", "image/vnd.microsoft.icon", "image/icon", "image/ico":
-		return true
-	case "image/png", "image/jpeg", "image/jpg", "image/gif":
-		return true
-	case "image/svg+xml", "image/webp":
+	case "image/x-icon", "image/vnd.microsoft.icon", "image/icon", "image/ico",
+		"image/png", "image/jpeg", "image/jpg", "image/gif",
+		"image/svg+xml", "image/webp":
 		return true
 	default:
 		return false
 	}
+}
+
+func inferContentType(targetURL, respContentType string) string {
+	if respContentType != "" {
+		return respContentType
+	}
+
+	if strings.HasSuffix(targetURL, ".png") {
+		return "image/png"
+	}
+
+	return "image/x-icon"
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -454,7 +584,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-		if r.Method == "OPTIONS" {
+		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -466,75 +596,16 @@ func corsMiddleware(next http.Handler) http.Handler {
 func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/") && r.URL.Path != "/static/" {
-			handleNotFound(w, r)
+			http.Error(w, "The requested resource could not be found", http.StatusNotFound)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func handleNotFound(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "The requested resource could not be found", http.StatusNotFound)
-}
-
-func handleServerError(w http.ResponseWriter, r *http.Request, err error) {
-	log.Println("Internal server error:", err)
-	http.Error(w, "Internal server error", http.StatusInternalServerError)
-}
-
-func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
-	file, err := assets.Embeddedfiles.Open("static/robots.txt")
-	if err != nil {
-		handleServerError(w, r, err)
-		return
-	}
-	defer file.Close()
-
-	w.Header().Set("Content-Type", "text/plain")
-	_, err = io.Copy(w, file)
-	if err != nil {
-		handleServerError(w, r, err)
-		return
-	}
-}
-
-func handleFavicon(w http.ResponseWriter, r *http.Request) {
-	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
-	if err != nil {
-		handleServerError(w, r, err)
-		return
-	}
-	defer file.Close()
-
-	w.Header().Set("Content-Type", "image/x-icon")
-	_, err = io.Copy(w, file)
-	if err != nil {
-		handleServerError(w, r, err)
-		return
-	}
-}
-
-func handleDomains(w http.ResponseWriter, r *http.Request) {
-	if err := repo.Ping(); err != nil {
-		http.Error(w, "Database connection failed", http.StatusServiceUnavailable)
-		return
-	}
-
-	jsonResult, err := repo.List()
-	if err != nil {
-		handleServerError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate") // cached for 5 minutes
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(jsonResult))
-}
-
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		handleNotFound(w, r)
+		http.Error(w, "The requested resource could not be found", http.StatusNotFound)
 		return
 	}
 
@@ -550,67 +621,106 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 
 	domain := extractDomain(rawURL)
 
-	if data, contentType, err := repo.Get(domain); err == nil {
-		etag := fmt.Sprintf(`"fav-%s"`, domain)
-
-		// Check ETag match (handle Cloudflare's W/ prefix)
-		clientETag := r.Header.Get("If-None-Match")
-		if clientETag == etag || clientETag == "W/"+etag {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-
-		w.Header().Set("Content-Type", contentType)
-		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
-		w.Header().Set("ETag", etag)
-		w.Header().Set("X-Cache", "HIT")
-		w.Header().Set("X-Favicon-Source", "cached")
-
-		_, err = w.Write(data)
-		if err != nil {
-			handleServerError(w, r, err)
-			return
-		}
+	if serveFromCache(w, r, domain) {
 		return
 	}
 
 	baseURL := "https://" + domain
 	faviconURLGroups := getFaviconURLs(baseURL, domain)
 
-	if result := fetchFaviconsParallel(faviconURLGroups, 1500*time.Millisecond); result != nil {
+	result := fetchFaviconsParallel(faviconURLGroups, faviconFetchTimeout)
+	if result != nil {
 		if err := repo.Save(domain, result.Data, result.ContentType); err != nil {
 			log.Printf("Failed to cache favicon for %s: %v", domain, err)
 		}
 
-		w.Header().Set("Content-Type", result.ContentType)
-		w.Header().Set("Cache-Control", "public, max-age=86400")
-		w.Header().Set("X-Cache", "MISS")
-		w.Header().Set("X-Favicon-Source", "fetched")
-
-		_, err := w.Write(result.Data)
-		if err != nil {
-			handleServerError(w, r, err)
-			return
-		}
+		serveFaviconData(w, result.Data, result.ContentType, false)
 		return
 	}
 
+	serveDefaultFavicon(w, r)
+}
+
+func serveFromCache(w http.ResponseWriter, r *http.Request, domain string) bool {
+	data, contentType, err := repo.Get(domain)
+	if err != nil {
+		return false
+	}
+
+	etag := fmt.Sprintf(`"fav-%s"`, domain)
+
+	clientETag := r.Header.Get("If-None-Match")
+	if clientETag == etag || clientETag == "W/"+etag {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", cacheTTL))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("X-Cache", "HIT")
+	w.Header().Set("X-Favicon-Source", "cached")
+
+	if _, err := w.Write(data); err != nil {
+		log.Printf("Error writing cached response: %v", err)
+	}
+
+	return true
+}
+
+func serveFaviconData(w http.ResponseWriter, data []byte, contentType string, cached bool) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cacheTTL))
+
+	if cached {
+		w.Header().Set("X-Cache", "HIT")
+		w.Header().Set("X-Favicon-Source", "cached")
+	} else {
+		w.Header().Set("X-Cache", "MISS")
+		w.Header().Set("X-Favicon-Source", "fetched")
+	}
+
+	if _, err := w.Write(data); err != nil {
+		log.Printf("Error writing favicon response: %v", err)
+	}
+}
+
+func serveDefaultFavicon(w http.ResponseWriter, r *http.Request) {
 	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
 	if err != nil {
-		handleServerError(w, r, err)
+		log.Printf("Error opening default favicon: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer file.Close()
 
 	w.Header().Set("Content-Type", "image/x-icon")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d", cacheTTL))
 	w.Header().Set("X-Cache", "DEFAULT")
 	w.Header().Set("X-Favicon-Source", "default")
-	_, err = io.Copy(w, file)
-	if err != nil {
-		handleServerError(w, r, err)
+
+	if _, err := io.Copy(w, file); err != nil {
+		log.Printf("Error copying default favicon: %v", err)
+	}
+}
+
+func handleDomains(w http.ResponseWriter, r *http.Request) {
+	if err := repo.Ping(); err != nil {
+		http.Error(w, "Database connection failed", http.StatusServiceUnavailable)
 		return
 	}
+
+	jsonResult, err := repo.List()
+	if err != nil {
+		log.Printf("Error listing domains: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", listCacheTTL))
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(jsonResult))
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -624,11 +734,41 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
+func handleFavicon(w http.ResponseWriter, r *http.Request) {
+	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
+	if err != nil {
+		log.Printf("Error opening favicon: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", "image/x-icon")
+	if _, err := io.Copy(w, file); err != nil {
+		log.Printf("Error serving favicon: %v", err)
+	}
+}
+
+func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	file, err := assets.Embeddedfiles.Open("static/robots.txt")
+	if err != nil {
+		log.Printf("Error opening robots.txt: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", "text/plain")
+	if _, err := io.Copy(w, file); err != nil {
+		log.Printf("Error serving robots.txt: %v", err)
+	}
+}
+
 func main() {
 	var err error
 	repo, err = NewFaviconRepository("./data/db.sqlite?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer repo.Close()
 
@@ -640,25 +780,30 @@ func main() {
 	mux.HandleFunc("GET /domains", handleDomains)
 	mux.HandleFunc("GET /", handleHome)
 
-	server := &http.Server{Addr: ":80", Handler: corsMiddleware(mux)}
+	server := &http.Server{
+		Addr:    serverAddr,
+		Handler: corsMiddleware(mux),
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Println("Server is running at http://localhost")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal(err)
+		log.Printf("Server starting on http://localhost%s", serverAddr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server failed: %v", err)
 		}
 	}()
 
 	<-quit
 	log.Println("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("Server forced to shutdown: %v", err)
 	}
+
+	log.Println("Server stopped")
 }
