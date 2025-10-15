@@ -348,16 +348,17 @@ func getHTMLIconLinks(baseURL string) []string {
 
 func parseIconLinks(html, baseURL string) []string {
 	var icons []string
+	htmlLower := strings.ToLower(html)
 	offset := 0
 
 	for {
-		idx := strings.Index(html[offset:], "<link")
+		idx := strings.Index(htmlLower[offset:], "<link")
 		if idx == -1 {
 			break
 		}
 		offset += idx
 
-		end := strings.Index(html[offset:], ">")
+		end := strings.Index(htmlLower[offset:], ">")
 		if end == -1 {
 			break
 		}
