@@ -494,6 +494,7 @@ func handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
+		return
 	}
 }
 
@@ -509,6 +510,7 @@ func handleFavicon(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
+		return
 	}
 }
 
@@ -567,6 +569,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		_, err = w.Write(data)
 		if err != nil {
 			handleServerError(w, r, err)
+			return
 		}
 		return
 	}
@@ -587,6 +590,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		_, err := w.Write(result.Data)
 		if err != nil {
 			handleServerError(w, r, err)
+			return
 		}
 		return
 	}
@@ -605,6 +609,7 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	_, err = io.Copy(w, file)
 	if err != nil {
 		handleServerError(w, r, err)
+		return
 	}
 }
 

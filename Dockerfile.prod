@@ -20,10 +20,10 @@ RUN apk --no-cache add ca-certificates sqlite
 
 RUN addgroup -g 1001 -S favicon && adduser -S favicon -u 1001 -G favicon
 
-# Create data directory for database
-RUN mkdir -p /data && chown favicon:favicon /data
-
 WORKDIR /app
+
+# Create data directory for database
+RUN mkdir -p ./data && chown favicon:favicon ./data
 
 # Copy and verify the binary
 COPY --chown=favicon:favicon --from=builder /app/favicon ./favicon
