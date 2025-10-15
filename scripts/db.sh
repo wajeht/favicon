@@ -3,7 +3,7 @@ set -e
 
 source .env
 
-LOCAL_DIR="./"
+LOCAL_DIR="./data"
 REMOTE_DIR="~/databases/favicon"
 
 usage() {
