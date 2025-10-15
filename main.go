@@ -238,8 +238,8 @@ func getHTMLIconLinks(baseURL string) []string {
 		tag := html[start : start+end+1]
 
 		// Check if it's an icon link
-		if (strings.Contains(tag, `rel="icon"`) || strings.Contains(tag, `rel='icon'`) ||
-			strings.Contains(tag, `rel="shortcut icon"`) || strings.Contains(tag, `rel='shortcut icon'`)) {
+		if strings.Contains(tag, `rel="icon"`) || strings.Contains(tag, `rel='icon'`) ||
+			strings.Contains(tag, `rel="shortcut icon"`) || strings.Contains(tag, `rel='shortcut icon'`) {
 			// Extract href
 			hrefIdx := strings.Index(tag, "href=")
 			if hrefIdx != -1 {
