@@ -275,13 +275,10 @@ func TestIsIconLink(t *testing.T) {
 }
 
 func TestGetFaviconURLsPriority(t *testing.T) {
-	// Test that HTML icons are fetched after manifest icons
-	// This is a simple check to ensure the priority order is correct
 	baseURL := "https://example.com"
 	domain := "example.com"
 	groups := getFaviconURLs(baseURL, domain)
 
-	// First group should be standard favicon locations
 	if len(groups) < 1 {
 		t.Fatal("Expected at least 1 URL group")
 	}
@@ -291,7 +288,6 @@ func TestGetFaviconURLsPriority(t *testing.T) {
 		t.Error("First priority should be favicon.ico")
 	}
 
-	// Second group should be apple touch icons
 	if len(groups) < 2 {
 		t.Fatal("Expected at least 2 URL groups")
 	}
@@ -348,7 +344,7 @@ func setupTestDB(t *testing.T) *FaviconRepository {
 	return testRepo
 }
 
-func teardownTestDB(t *testing.T) {
+func teardownTestDB(_ *testing.T) {
 	if testRepo != nil {
 		testRepo.Close()
 	}

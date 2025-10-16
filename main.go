@@ -694,7 +694,7 @@ func serveFaviconData(w http.ResponseWriter, data []byte, contentType string, ca
 	}
 }
 
-func serveDefaultFavicon(w http.ResponseWriter, r *http.Request) {
+func serveDefaultFavicon(w http.ResponseWriter, _ *http.Request) {
 	file, err := assets.Embeddedfiles.Open("static/favicon.ico")
 	if err != nil {
 		log.Printf("Error opening default favicon: %v", err)
