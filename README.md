@@ -39,11 +39,6 @@ add this to your html:
    - If no favicon found after timeout, returns a default favicon
    - Response includes `X-Favicon-Source: default` header
 
-4. **Cache Management**:
-   - Favicons expire after 24 hours
-   - Cleanup runs automatically every 6 hours
-   - Expired entries are removed to maintain performance
-
 ## 📑 Docs
 
 - See [DEVELOPMENT](./docs/development.md) for `development` guide.
