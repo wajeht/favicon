@@ -9,7 +9,7 @@ automagically grab the favicon of a url
 add this to your html:
 
 ```html
-<img src="https://favicon.jaw.dev?url=<url>" />
+<img loading="lozy" src="https://favicon.jaw.dev?url=<url>" />
 ```
 
 > [!NOTE]
