@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"bytes"
 	"image"
 	"image/png"
@@ -164,13 +165,7 @@ func TestGetHTMLIconLinks(t *testing.T) {
 	}
 
 	for _, expected := range expectedIcons {
-		found := false
-		for _, icon := range icons {
-			if icon == expected {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(icons, expected)
 		if !found {
 			t.Errorf("Expected to find icon %q, but it was not found", expected)
 		}
