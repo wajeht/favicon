@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -160,13 +161,15 @@ func (r *FaviconRepository) List() (string, error) {
 	query := `
 		SELECT json_group_array(
 			json_object(
+				'id', id,
 				'domain', domain,
+				'data_size', length(data),
 				'content_type', content_type,
 				'created_at', created_at
 			)
 		)
 		FROM favicons
-		ORDER BY created_at DESC
+		ORDER BY id ASC
 	`
 
 	rows, err := r.db.Query(query)
@@ -575,6 +578,14 @@ func isValidImageType(contentType string) bool {
 	}
 }
 
+func wantsJSON(r *http.Request) bool {
+	if r.URL.Query().Get("format") == "json" {
+		return true
+	}
+	accept := r.Header.Get("Accept")
+	return strings.Contains(accept, "application/json")
+}
+
 func inferContentType(targetURL, respContentType string) string {
 	if respContentType != "" {
 		return respContentType
@@ -726,10 +737,71 @@ func handleDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	if wantsJSON(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", listCacheTTL))
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(jsonResult))
+		return
+	}
+
+	var domains []struct {
+		ID          int    `json:"id"`
+		Domain      string `json:"domain"`
+		DataSize    int    `json:"data_size"`
+		ContentType string `json:"content_type"`
+		CreatedAt   string `json:"created_at"`
+	}
+	if err := json.Unmarshal([]byte(jsonResult), &domains); err != nil {
+		log.Printf("Error parsing domains: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", listCacheTTL))
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(jsonResult))
+
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head>
+<title>Domains</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+table { border-collapse: collapse; width: 100%%; margin: 20px auto; }
+th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+th { background-color: #f5f5f5; font-weight: bold; position: sticky; top: 0; }
+tr:hover { background-color: #f9f9f9; }
+td:first-child, th:first-child { text-align: center; }
+</style>
+</head>
+<body>
+<table>
+<thead>
+<tr>
+<th>id</th>
+<th>domain</th>
+<th>data</th>
+<th>content_type</th>
+<th>created_at</th>
+</tr>
+</thead>
+<tbody>
+`)
+	for _, d := range domains {
+		fmt.Fprintf(w, "<tr><td>%d</td><td>%s</td><td><img loading=\"lazy\" src=\"/?url=%s\" alt=\"%s favicon\" style=\"width: 16px; height: 16px;\" /> %d bytes</td><td>%s</td><td>%s</td></tr>\n",
+			d.ID,
+			html.EscapeString(d.Domain),
+			html.EscapeString(d.Domain),
+			html.EscapeString(d.Domain),
+			d.DataSize,
+			html.EscapeString(d.ContentType),
+			html.EscapeString(d.CreatedAt))
+	}
+	fmt.Fprintf(w, `</tbody>
+</table>
+</body>
+</html>`)
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {

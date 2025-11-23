@@ -1,12 +1,12 @@
 package main
 
 import (
-	"slices"
 	"bytes"
 	"image"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -171,7 +171,6 @@ func TestGetHTMLIconLinks(t *testing.T) {
 		}
 	}
 
-	// Ensure non-icon links are not included
 	for _, unexpected := range unexpectedLinks {
 		for _, icon := range icons {
 			if strings.Contains(icon, unexpected) {
@@ -503,6 +502,122 @@ func TestStripTrailingSlashMiddleware(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status %d for /static/, got %d", http.StatusOK, w.Code)
+	}
+}
+
+func TestRepositoryList(t *testing.T) {
+	repo := setupTestDB(t)
+	defer teardownTestDB(t)
+
+	repo.Save("example.com", []byte("test data 1"), "image/x-icon")
+	repo.Save("test.com", []byte("test data 2"), "image/png")
+
+	jsonResult, err := repo.List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+
+	if jsonResult == "" {
+		t.Error("List returned empty string")
+	}
+
+	if !strings.Contains(jsonResult, "id") {
+		t.Error("JSON should contain 'id' field")
+	}
+	if !strings.Contains(jsonResult, "domain") {
+		t.Error("JSON should contain 'domain' field")
+	}
+	if !strings.Contains(jsonResult, "data_size") {
+		t.Error("JSON should contain 'data_size' field")
+	}
+	if !strings.Contains(jsonResult, "content_type") {
+		t.Error("JSON should contain 'content_type' field")
+	}
+	if !strings.Contains(jsonResult, "created_at") {
+		t.Error("JSON should contain 'created_at' field")
+	}
+}
+
+func TestHandleDomainsJSON(t *testing.T) {
+	repo = setupTestDB(t)
+	defer teardownTestDB(t)
+
+	repo.Save("example.com", []byte("test data"), "image/x-icon")
+
+	req := httptest.NewRequest("GET", "/domains?format=json", nil)
+	w := httptest.NewRecorder()
+
+	handleDomains(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/json" {
+		t.Errorf("Expected Content-Type 'application/json', got %q", contentType)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "example.com") {
+		t.Error("Response should contain 'example.com'")
+	}
+	if !strings.Contains(body, "id") {
+		t.Error("Response should contain 'id' field")
+	}
+}
+
+func TestHandleDomainsHTML(t *testing.T) {
+	repo = setupTestDB(t)
+	defer teardownTestDB(t)
+
+	repo.Save("example.com", []byte("test data 1"), "image/x-icon")
+	repo.Save("test.com", []byte("test data 2"), "image/png")
+
+	req := httptest.NewRequest("GET", "/domains", nil)
+	w := httptest.NewRecorder()
+
+	handleDomains(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/html") {
+		t.Errorf("Expected Content-Type 'text/html', got %q", contentType)
+	}
+
+	body := w.Body.String()
+
+	if !strings.Contains(body, "<table>") {
+		t.Error("Response should contain table element")
+	}
+	if !strings.Contains(body, "<th>id</th>") {
+		t.Error("Response should contain 'id' header")
+	}
+	if !strings.Contains(body, "<th>domain</th>") {
+		t.Error("Response should contain 'domain' header")
+	}
+	if !strings.Contains(body, "<th>data</th>") {
+		t.Error("Response should contain 'data' header")
+	}
+	if !strings.Contains(body, "<th>content_type</th>") {
+		t.Error("Response should contain 'content_type' header")
+	}
+	if !strings.Contains(body, "<th>created_at</th>") {
+		t.Error("Response should contain 'created_at' header")
+	}
+
+	if !strings.Contains(body, "example.com") {
+		t.Error("Response should contain 'example.com'")
+	}
+	if !strings.Contains(body, "test.com") {
+		t.Error("Response should contain 'test.com'")
+	}
+
+	if !strings.Contains(body, `loading="lazy"`) {
+		t.Error("Images should have loading='lazy' attribute")
 	}
 }
 
