@@ -39,6 +39,61 @@ add this to your html:
    - If no favicon found after timeout, returns a default favicon
    - Response includes `X-Favicon-Source: default` header
 
+## API Endpoints
+
+### GET /
+
+Fetches the favicon for a given URL.
+
+**Parameters:**
+- `url` (required): The URL to fetch the favicon for
+
+**Example:**
+```
+https://favicon.jaw.dev?url=github.com
+```
+
+### GET /domains
+
+Lists all cached favicons in the database.
+
+**Parameters:**
+- `format` (optional): Response format
+  - Default: HTML table view
+  - `json`: Returns JSON array
+
+**HTML Response:**
+
+Returns an HTML table with the following columns:
+- `id`: Database ID
+- `domain`: Cached domain
+- `data`: Favicon preview with size in bytes
+- `content_type`: MIME type of the favicon
+- `created_at`: Timestamp when cached
+
+**JSON Response:**
+
+```bash
+curl https://favicon.jaw.dev/domains?format=json
+```
+
+Returns JSON array:
+```json
+[
+  {
+    "id": 1,
+    "domain": "github.com",
+    "data_size": 5430,
+    "content_type": "image/png",
+    "created_at": "2025-10-15 04:55:40"
+  }
+]
+```
+
+### GET /healthz
+
+Health check endpoint. Returns `ok` if the service is healthy.
+
 ## 📑 Docs
 
 - See [DEVELOPMENT](./docs/development.md) for `development` guide.
