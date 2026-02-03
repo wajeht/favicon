@@ -18,7 +18,7 @@ FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates sqlite
 
-RUN addgroup -g 1001 -S favicon && adduser -S favicon -u 1001 -G favicon
+RUN addgroup -g 1000 -S favicon && adduser -S favicon -u 1000 -G favicon
 
 WORKDIR /app
 
