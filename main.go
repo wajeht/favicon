@@ -774,6 +774,7 @@ th { background-color: #f5f5f5; font-weight: bold; position: sticky; top: 0; }
 tr:hover { background-color: #f9f9f9; }
 td:first-child, th:first-child { text-align: center; }
 </style>
+<script defer src="https://umami.jaw.dev/script.js" data-website-id="9540e369-b296-424d-913f-436a46d11745"></script>
 </head>
 <body>
 <table>
