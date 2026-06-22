@@ -3,7 +3,7 @@ module github.com/wajeht/favicon
 go 1.26.4
 
 require (
-	github.com/mattn/go-sqlite3 v1.14.46
+	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/pressly/goose/v3 v3.27.1
 	golang.org/x/image v0.43.0
 )
