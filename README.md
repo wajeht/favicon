@@ -45,6 +45,8 @@ add this to your html:
 
 Fetches the favicon for a given URL.
 
+Without a `url` parameter, this endpoint serves an HTML usage page.
+
 **Parameters:**
 - `url` (required): The URL to fetch the favicon for
 

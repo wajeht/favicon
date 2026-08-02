@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"html/template"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -67,7 +68,13 @@ var (
 	repo *FaviconRepository
 
 	httpClient = newHTTPClient()
+
+	pageTemplates = mustParseTemplates()
 )
+
+type PageData struct {
+	Title string
+}
 
 type FaviconResult struct {
 	Data        []byte
@@ -623,15 +630,66 @@ func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func parseTemplates() (map[string]*template.Template, error) {
+	templates := make(map[string]*template.Template)
+	pages := []string{"index", "404"}
+
+	base, err := assets.Embeddedfiles.ReadFile("templates/base.html")
+	if err != nil {
+		return nil, fmt.Errorf("reading base template: %w", err)
+	}
+
+	for _, page := range pages {
+		content, err := assets.Embeddedfiles.ReadFile("templates/" + page + ".html")
+		if err != nil {
+			return nil, fmt.Errorf("reading %s template: %w", page, err)
+		}
+
+		tmpl, err := template.New("base").Parse(string(base))
+		if err != nil {
+			return nil, fmt.Errorf("parsing base template: %w", err)
+		}
+
+		tmpl, err = tmpl.Parse(string(content))
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s template: %w", page, err)
+		}
+
+		templates[page] = tmpl
+	}
+
+	return templates, nil
+}
+
+func mustParseTemplates() map[string]*template.Template {
+	templates, err := parseTemplates()
+	if err != nil {
+		panic(err)
+	}
+
+	return templates
+}
+
+func handleNotFound(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	if err := pageTemplates["404"].Execute(w, PageData{Title: "404 - Not Found"}); err != nil {
+		log.Printf("Error rendering not found page: %v", err)
+	}
+}
+
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		http.Error(w, "The requested resource could not be found", http.StatusNotFound)
+		handleNotFound(w)
 		return
 	}
 
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
-		http.Error(w, "Missing 'url' query parameter. Usage: /?url=<url>", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := pageTemplates["index"].Execute(w, PageData{Title: "Favicon"}); err != nil {
+			log.Printf("Error rendering home page: %v", err)
+		}
 		return
 	}
 
