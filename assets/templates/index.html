@@ -1,0 +1,27 @@
+{{define "content"}}
+<header>
+    <h1>🌐 Favicon</h1>
+    <p>Automagically grab the favicon of a URL.</p>
+</header>
+
+<article>
+    <section>
+        <h2>Basic Usage</h2>
+        <pre><code>&lt;img loading="lazy" src="https://favicon.jaw.dev?url=github.com" /&gt;</code></pre>
+    </section>
+
+    <section>
+        <h2>Options</h2>
+        <dl>
+            <dt><code>url</code></dt>
+            <dd>URL to fetch the favicon for (required)</dd>
+        </dl>
+    </section>
+
+    <section>
+        <h2>Examples</h2>
+        <pre><code>/?url=github.com
+/?url=https://example.com</code></pre>
+    </section>
+</article>
+{{end}}

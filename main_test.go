@@ -38,6 +38,23 @@ func TestExtractDomain(t *testing.T) {
 	}
 }
 
+func TestHandleNotFoundPage(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
+	rec := httptest.NewRecorder()
+
+	handleHome(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+	if contentType := rec.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Errorf("expected HTML content type, got %q", contentType)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "<h1>404</h1>") {
+		t.Errorf("expected not found page, got %q", body)
+	}
+}
+
 func TestIsValidImageType(t *testing.T) {
 	tests := []struct {
 		contentType string
@@ -434,17 +451,20 @@ func TestHandleFavicon(t *testing.T) {
 	}
 }
 
-func TestHandleHomeMissingURL(t *testing.T) {
-	repo = setupTestDB(t)
-	defer teardownTestDB(t)
-
+func TestHandleHomePage(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
 
 	handleHome(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("Expected status %d, got %d", http.StatusBadRequest, w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	if contentType := w.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
+		t.Errorf("expected HTML content type, got %q", contentType)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "<h1>🌐 Favicon</h1>") {
+		t.Errorf("expected favicon homepage, got %q", body)
 	}
 }
 
@@ -590,8 +610,14 @@ func TestHandleDomainsHTML(t *testing.T) {
 
 	body := w.Body.String()
 
-	if !strings.Contains(body, "<table>") {
+	if !strings.Contains(body, "<table") {
 		t.Error("Response should contain table element")
+	}
+	if !strings.Contains(body, "<h1>🌐 Domains</h1>") {
+		t.Error("Response should contain domains header")
+	}
+	if !strings.Contains(body, "Copyright © 2026") {
+		t.Error("Response should contain shared footer")
 	}
 	if !strings.Contains(body, "<th>id</th>") {
 		t.Error("Response should contain 'id' header")
