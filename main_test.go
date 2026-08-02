@@ -463,7 +463,7 @@ func TestHandleHomePage(t *testing.T) {
 	if contentType := w.Header().Get("Content-Type"); contentType != "text/html; charset=utf-8" {
 		t.Errorf("expected HTML content type, got %q", contentType)
 	}
-	if body := w.Body.String(); !strings.Contains(body, "<h1>🔖 Favicon</h1>") {
+	if body := w.Body.String(); !strings.Contains(body, "<h1>🌐 Favicon</h1>") {
 		t.Errorf("expected favicon homepage, got %q", body)
 	}
 }
