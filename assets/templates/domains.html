@@ -1,0 +1,29 @@
+{{define "content"}}
+<header>
+    <h1>🌐 Domains</h1>
+    <p>Cached favicons ({{len .Domains}} total)</p>
+</header>
+
+<table style="border-collapse: collapse;" border="1">
+    <thead>
+        <tr>
+            <th>id</th>
+            <th>domain</th>
+            <th>data</th>
+            <th>content_type</th>
+            <th>created_at</th>
+        </tr>
+    </thead>
+    <tbody>
+        {{range .Domains}}
+        <tr>
+            <td>{{.ID}}</td>
+            <td>{{.Domain}}</td>
+            <td><img loading="lazy" src="/?url={{.Domain}}" alt="{{.Domain}} favicon" width="16" height="16"> {{.DataSize}} bytes</td>
+            <td>{{.ContentType}}</td>
+            <td>{{.CreatedAt}}</td>
+        </tr>
+        {{end}}
+    </tbody>
+</table>
+{{end}}

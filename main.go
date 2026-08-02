@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"html/template"
 	"image"
 	"image/jpeg"
@@ -74,6 +73,19 @@ var (
 
 type PageData struct {
 	Title string
+}
+
+type DomainEntry struct {
+	ID          int    `json:"id"`
+	Domain      string `json:"domain"`
+	DataSize    int    `json:"data_size"`
+	ContentType string `json:"content_type"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type DomainsPageData struct {
+	Title   string
+	Domains []DomainEntry
 }
 
 type FaviconResult struct {
@@ -632,7 +644,7 @@ func stripTrailingSlashMiddleware(next http.Handler) http.Handler {
 
 func parseTemplates() (map[string]*template.Template, error) {
 	templates := make(map[string]*template.Template)
-	pages := []string{"index", "404"}
+	pages := []string{"index", "404", "domains"}
 
 	base, err := assets.Embeddedfiles.ReadFile("templates/base.html")
 	if err != nil {
@@ -803,13 +815,7 @@ func handleDomains(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var domains []struct {
-		ID          int    `json:"id"`
-		Domain      string `json:"domain"`
-		DataSize    int    `json:"data_size"`
-		ContentType string `json:"content_type"`
-		CreatedAt   string `json:"created_at"`
-	}
+	var domains []DomainEntry
 	if err := json.Unmarshal([]byte(jsonResult), &domains); err != nil {
 		log.Printf("Error parsing domains: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -818,49 +824,12 @@ func handleDomains(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, must-revalidate", listCacheTTL))
-	w.WriteHeader(http.StatusOK)
-
-	fmt.Fprintf(w, `<!DOCTYPE html>
-<html>
-<head>
-<title>Domains</title>
-<style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-table { border-collapse: collapse; width: 100%%; margin: 20px auto; }
-th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
-th { background-color: #f5f5f5; font-weight: bold; position: sticky; top: 0; }
-tr:hover { background-color: #f9f9f9; }
-td:first-child, th:first-child { text-align: center; }
-</style>
-<script defer src="https://umami.jaw.dev/script.js" data-website-id="9540e369-b296-424d-913f-436a46d11745"></script>
-</head>
-<body>
-<table>
-<thead>
-<tr>
-<th>id</th>
-<th>domain</th>
-<th>data</th>
-<th>content_type</th>
-<th>created_at</th>
-</tr>
-</thead>
-<tbody>
-`)
-	for _, d := range domains {
-		fmt.Fprintf(w, "<tr><td>%d</td><td>%s</td><td><img loading=\"lazy\" src=\"/?url=%s\" alt=\"%s favicon\" style=\"width: 16px; height: 16px;\" /> %d bytes</td><td>%s</td><td>%s</td></tr>\n",
-			d.ID,
-			html.EscapeString(d.Domain),
-			html.EscapeString(d.Domain),
-			html.EscapeString(d.Domain),
-			d.DataSize,
-			html.EscapeString(d.ContentType),
-			html.EscapeString(d.CreatedAt))
+	if err := pageTemplates["domains"].Execute(w, DomainsPageData{
+		Title:   "Domains",
+		Domains: domains,
+	}); err != nil {
+		log.Printf("Error rendering domains page: %v", err)
 	}
-	fmt.Fprintf(w, `</tbody>
-</table>
-</body>
-</html>`)
 }
 
 func handleHealthz(w http.ResponseWriter, r *http.Request) {

@@ -610,8 +610,14 @@ func TestHandleDomainsHTML(t *testing.T) {
 
 	body := w.Body.String()
 
-	if !strings.Contains(body, "<table>") {
+	if !strings.Contains(body, "<table") {
 		t.Error("Response should contain table element")
+	}
+	if !strings.Contains(body, "<h1>🌐 Domains</h1>") {
+		t.Error("Response should contain domains header")
+	}
+	if !strings.Contains(body, "Copyright © 2026") {
+		t.Error("Response should contain shared footer")
 	}
 	if !strings.Contains(body, "<th>id</th>") {
 		t.Error("Response should contain 'id' header")
