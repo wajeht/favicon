@@ -15,6 +15,8 @@ add this to your html:
 > [!NOTE]
 > the first request will be slow, but the subsequent requests will be cached.
 
+Set `HTTP_PROXY` and `HTTPS_PROXY` to route outgoing requests through a proxy; `NO_PROXY` bypasses selected hosts. Lowercase equivalents are also supported. Without these settings, requests connect directly.
+
 ## How it works
 
 1. **First Request (Cache Miss)**:

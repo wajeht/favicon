@@ -251,6 +251,7 @@ func newHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: httpTimeout,
 		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
 			MaxIdleConns:          maxIdleConns,
 			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 			MaxConnsPerHost:       maxConnsPerHost,
