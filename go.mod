@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/mattn/go-sqlite3 v1.14.53
 	github.com/pressly/goose/v3 v3.29.0
-	golang.org/x/image v0.47.0
+	golang.org/x/image v0.48.0
 )
 
 require (
